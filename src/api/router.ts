@@ -14,12 +14,37 @@ export const getRouter = async (app: Hono) => {
     throw err;
   });
   app.use("/.well_known/jwks.json", wellKnownJWKSHandler);
-  // TODO: add jwt back
   // app.use("*", withAuth());
 
-  const sites = app.basePath("/mount");
+  app.put("/volumes/:id", async (ctx) => {
+    const body = await ctx.req.json() as {
+      git: { url: string; ref: string };
+    };
 
-  sites.all("/:drive", async (ctx) => {
+    throw new Error("Not Implemented");
+  });
+
+  app.get("/volumes/:id/files", (ctx) => {
+    throw new Error("Not Implemented");
+  });
+
+  app.get("/volumes/:id/files/*path", (ctx) => {
+    throw new Error("Not Implemented");
+  });
+
+  app.put("/volumes/:id/files/*path", (ctx) => {
+    throw new Error("Not Implemented");
+  });
+
+  app.post("/volumes/:id/files/*path", (ctx) => {
+    throw new Error("Not Implemented");
+  });
+
+  app.delete("/volumes/:id/files/*path", (ctx) => {
+    throw new Error("Not Implemented");
+  });
+
+  app.all("/:drive", async (ctx) => {
     // TODO: add JWT back
     // const canRun = get("checkIsAllowed");
     // canRun(exec.workflow);

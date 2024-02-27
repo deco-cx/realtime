@@ -17,7 +17,7 @@ export type ServerMessages =
   | { type: "file-fetched"; data: string | undefined }
   | { type: "file-updated"; filepath: string; hash: string }
   | { type: "file-unlinked"; filepath: string }
-  | { type: "operation-succeeded"; data?: string }
+  | { type: "operation-succeeded"; data?: string | number | string[] }
   | { type: "operation-failed"; reason?: string; code: ErrorCode };
 
 export type Acked<T> = T & { ack: string };
@@ -87,7 +87,7 @@ export interface IBackend {
 }
 
 interface Options {
-  endpoint: string;
+  name: string;
   onDisconnect?: () => void;
   onConnect?: () => void;
   onChange?: (filename: string, action: "update" | "unlink") => {};
@@ -101,7 +101,7 @@ export const ignore = (code: ErrorCode) => (e: Error) => {
 };
 
 export const mount = ({
-  endpoint,
+  name: endpoint,
   onDisconnect,
   onConnect,
   onChange,
@@ -109,26 +109,26 @@ export const mount = ({
   const cache = new Map<string, string>();
 
   let socketPromise: Promise<WebSocket> | undefined;
-  const transactions = new Map<string, string | boolean | undefined>();
+  const transactions = new Map<string, unknown>();
 
   const getSocket = () => {
     socketPromise ??= init();
     return socketPromise;
   };
 
-  const transaction = () => {
+  const transaction = <T>() => {
     const id = crypto.randomUUID();
-    const t = Promise.withResolvers<string | boolean | undefined>();
+    const t = Promise.withResolvers<T>();
 
     transactions.set(id, t);
 
-    return { id, response: t.promise };
+    return { id, response: t.promise as Promise<T> };
   };
 
   const init = (name?: string, retry = 0): Promise<WebSocket> => {
     const sp = Promise.withResolvers<WebSocket>();
 
-    const ws = new WebSocket(endpoint);
+    const ws = new WebSocket(name || endpoint);
 
     ws.addEventListener("open", () => {
       transactions.clear();
@@ -194,11 +194,9 @@ export const mount = ({
     return sp.promise;
   };
 
-  const request = async (
-    msg: ClientMessages,
-  ): Promise<string | boolean | undefined> => {
+  const request = async <T>(msg: ClientMessages) => {
     const socket = await getSocket();
-    const { id, response } = transaction();
+    const { id, response } = transaction<T>();
 
     socket.send(JSON.stringify({ ...msg, ack: id }));
 
@@ -212,11 +210,7 @@ export const mount = ({
       return fromCache;
     }
 
-    const response = await request({ type: "readFile", filepath });
-
-    if (typeof response !== "string") {
-      throw new Error("Unknown data type");
-    }
+    const response = await request<string>({ type: "readFile", filepath });
 
     cache.set(filepath, response);
 
@@ -249,12 +243,10 @@ export const mount = ({
     socket.close();
   };
 
-  const du = (filepath: string) =>
-    request({ type: "du", filepath }).then((data) => Number(data));
+  const du = (filepath: string) => request<number>({ type: "du", filepath });
 
   const readdir = (filepath: string) =>
-    request({ type: "readdir", filepath })
-      .then((data) => JSON.parse(data as string));
+    request<string[]>({ type: "readdir", filepath });
 
   const fs = {
     writeFile,

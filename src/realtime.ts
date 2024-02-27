@@ -196,7 +196,16 @@ export class Realtime implements DurableObject {
 
             const du = await this.du(filepath);
 
-            send({ type: "operation-succeeded", data: String(du), ack });
+            send({ type: "operation-succeeded", data: du, ack });
+
+            return;
+          }
+          case "readdir": {
+            const { filepath, ack } = msg;
+
+            const result = await this.readdir(filepath);
+
+            send({ type: "operation-succeeded", data: result, ack });
 
             return;
           }
