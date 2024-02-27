@@ -1,23 +1,19 @@
-name = "durable-workers"
-main = "src/worker.ts"
-compatibility_date = "2023-06-28"
-compatibility_flags = ["durable_object_alarms"]
+name = "durable-realtime-fs"
+main = "src/index.ts"
+compatibility_date = "2024-02-20"
 
 [dev]
-port = 8001
+port = 8002
 local_protocol = "http"
 
-[[analytics_engine_datasets]]
-binding = "EXECUTIONS"
+[[durable_objects.bindings]]
+name = "REALTIME"
+class_name = "Realtime"
 
-[durable_objects]
-bindings = [
-  { name = "WORKFLOWS", class_name = "Workflow" }
-]
 [[rules]]
 type = "ESModule"
 globs = ["**/*.ts"]
-# Indicate that you want the Workflow class to be callable as Durable Objects.
+# Indicate that you want the Realtime class to be callable as Durable Objects.
 [[migrations]]
 tag = "v1" # Should be unique for each entry
-new_classes = ["Workflow"]
+new_classes = ["Realtime"]

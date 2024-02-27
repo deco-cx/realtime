@@ -1,14 +1,13 @@
 import { Env, MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { verify } from "../djwt.js";
-import { WorkflowRuntimeRef } from "../registry/registries.ts";
 import { newJwksIssuer } from "../security/jwks.ts";
 import { JwtPayload } from "../security/jwt.ts";
 
 declare module "hono" {
   interface ContextVariableMap {
     principal: JwtPayload;
-    checkIsAllowed: (wkflow: WorkflowRuntimeRef) => void;
+    checkIsAllowed: (wkflow: unknown) => void;
     namespace: string;
   }
 }
@@ -59,11 +58,7 @@ const jwksIssuer = newJwksIssuer({
   remoteAddress: "https://deco.cx/.well_known/jwks.json",
 });
 
-export const withAuth = (): MiddlewareHandler<
-  Env,
-  "/namespaces/:namespace/*",
-  {}
-> => {
+export const withAuth = (): MiddlewareHandler<Env, "*", {}> => {
   return async (ctx, next) => {
     const credentials = ctx.req.headers.get("Authorization");
 
