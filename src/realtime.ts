@@ -218,7 +218,7 @@ export class Realtime implements DurableObject {
       "/volumes/:id/files/*": {
         get: async (req, { params }) => {
           const { "0": path, id: volumeId } = params;
-          const withContent = new URL(req.url).searchParams.get("content");
+          const withContent = new URL(req.url).searchParams.get("content") === "true";
 
           const fs: Record<string, { content: string | null }> = {};
           for (const key of await this.fs.readdir(path)) {
