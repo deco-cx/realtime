@@ -5,7 +5,8 @@
 	"type": "module",
 	"scripts": {
 		"deploy": "wrangler deploy",
-		"start": "wrangler dev"
+		"start": "wrangler dev",
+		"test": "deno run -A ./test.ts"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20240208.0",
@@ -13,8 +14,8 @@
 		"wrangler": "^3.28.4"
 	},
 	"dependencies": {
-		"@isomorphic-git/lightning-fs": "^4.6.0",
 		"esm": "^3.2.25",
+		"fast-json-patch": "^3.1.1",
 		"hono": "^4.0.5",
 		"jsonwebtoken": "^9.0.2"
 	}
