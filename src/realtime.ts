@@ -88,7 +88,7 @@ const createMemFS = (root: FileSystemNode = {}): MFFS => {
       root[path] = { content };
     },
     readdir: async (path): Promise<string[]> =>
-      Object.keys(path).filter((x) => x.startsWith(path)),
+      Object.keys(root).filter((x) => x.startsWith(path)),
   };
 };
 
