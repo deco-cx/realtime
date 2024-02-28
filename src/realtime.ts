@@ -36,8 +36,7 @@ export interface VolumePatchRequest {
 export interface FilePatchResult {
   path: string;
   accepted: boolean;
-  ops?: Operation[];
-  content?: unknown;
+  content?: string;
 }
 
 export interface VolumePatchResponse {
@@ -250,25 +249,44 @@ export class Realtime implements DurableObject {
         patch: async (req: Request) => {
           const { patches } = await req.json() as VolumePatchRequest;
 
-          const patched: Record<string, unknown> = {};
+          const results: FilePatchResult[] = [];
 
           for (const patch of patches) {
-            const json = await this.fs.readFile(patch.path).then((c) =>
-              JSON.parse(c ?? "{}")
-            );
+            const { path, patches: operations } = patch;
+            const content = await this.fs.readFile(path) ?? "{}";
 
-            patched[patch.path] = patch.patches.reduce(applyReducer, json);
+            try {
+              const newContent = JSON.stringify(
+                operations.reduce(applyReducer, JSON.parse(content)),
+              );
+
+              results.push({ accepted: true, path, content: newContent });
+            } catch (error) {
+              console.error(error);
+
+              results.push({ accepted: false, path, content });
+            }
           }
 
-          await Promise.all(
-            Object.entries(patched).map(([path, json]) =>
-              this.fs.writeFile(path, JSON.stringify(json))
-            ),
+          const shouldWrite = results.every((r) => r.accepted);
+
+          if (shouldWrite) {
+            await Promise.all(
+              results.map((r) =>
+                this.fs
+                  .writeFile(r.path, r.content!)
+                  .catch(() => r.accepted = false)
+              ),
+            );
+          }
+
+          return Response.json(
+            {
+              results: results.map((r) =>
+                r.accepted ? { ...r, content: undefined } : r
+              ),
+            } satisfies VolumePatchResponse,
           );
-
-          const body: VolumePatchResponse = { results: [] };
-
-          return Response.json(body);
         },
       },
     };
