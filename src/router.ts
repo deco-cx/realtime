@@ -9,12 +9,10 @@ export type Route<TContext> =
   | Handler<TContext>
   | Record<string, Handler<TContext>>;
 
-export type Routes<TContext> = Record<string, Route<TContext>>;
+export type Routes<TContext = {}> = Record<string, Route<TContext>>;
 
 /** O(n) router */
-export const createRouter = <TContext>(
-  routes: Record<string, Route<TContext>>,
-) => {
+export const createRouter = <TContext = {}>(routes: Routes<TContext>) => {
   const compiled = Object.entries(routes).map(([pathname, handler]) =>
     [new URLPattern({ pathname }), handler] as const
   );
@@ -44,4 +42,7 @@ export const createRouter = <TContext>(
   };
 };
 
-export type Router = ReturnType<typeof createRouter>;
+export type Router<TContext = {}> = (
+  request: Request,
+  ctx?: TContext,
+) => Promise<Response>;
