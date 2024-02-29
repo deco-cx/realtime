@@ -35,7 +35,7 @@ const client = () => {
       });
     },
     patch: (vpr: VolumePatchRequest): Promise<VolumePatchResponse> =>
-      fetch(new URL(`/volumes/${volume}`, base), {
+      fetch(new URL(`/volumes/${volume}/files`, base), {
         method: "PATCH",
         body: JSON.stringify(vpr),
         headers: { "Content-Type": "application/json" },
