@@ -215,23 +215,21 @@ const tieredFS = (...fastToSlow: MFFS[]): MFFS => {
   };
 };
 
-const EMPTY = "{}";
-
 export class Realtime implements DurableObject {
   state: DurableObjectState;
   sessions: Array<{ socket: WebSocket }> = [];
-  router: Router;
-
-  root: FileSystemNode;
   fs: MFFS;
+
+  router: Router;
+  timestamp: number;
 
   constructor(state: DurableObjectState) {
     this.state = state;
 
-    this.root = {};
+    this.timestamp = Date.now();
 
     const durableFS = createDurableFS(state);
-    const memFS = createMemFS(this.root);
+    const memFS = createMemFS();
 
     this.fs = tieredFS(memFS, durableFS);
 
@@ -268,7 +266,7 @@ export class Realtime implements DurableObject {
             fs: Record<string, { content: string | null }>;
             timestamp: number;
             volumeId: string;
-          } = { fs, timestamp: Date.now(), volumeId };
+          } = { fs, timestamp: this.timestamp, volumeId };
 
           return Response.json(body);
         },
@@ -316,7 +314,7 @@ export class Realtime implements DurableObject {
           for (const patch of patches) {
             const { path, patches: operations } = patch;
             const content =
-              await this.fs.readFile(path).catch(ignore("ENOENT")) ?? EMPTY;
+              await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "{}";
 
             try {
               const newContent = JSON.stringify(
@@ -327,7 +325,7 @@ export class Realtime implements DurableObject {
                 accepted: true,
                 path,
                 content: newContent,
-                deleted: newContent === EMPTY,
+                deleted: newContent === "null",
               });
             } catch (error) {
               console.error(error);
@@ -336,7 +334,7 @@ export class Realtime implements DurableObject {
             }
           }
 
-          const timestamp = Date.now();
+          this.timestamp = Date.now();
           const shouldWrite = results.every((r) => r.accepted);
 
           if (shouldWrite) {
@@ -360,14 +358,14 @@ export class Realtime implements DurableObject {
             if (shouldBroadcast) {
               for (const result of results) {
                 const { path, deleted } = result;
-                this.broadcast({ path, timestamp, deleted });
+                this.broadcast({ path, timestamp: this.timestamp, deleted });
               }
             }
           }
 
           return Response.json(
             {
-              timestamp,
+              timestamp: this.timestamp,
               results: results.map((r) =>
                 r.accepted ? { ...r, content: undefined } : r
               ),
