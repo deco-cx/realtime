@@ -11,13 +11,10 @@ export interface Env {
 
 const router = createRouter<{ env: Env }>({
   "/.well_known/jwks.json": wellKnownJWKSHandler,
-  "/volumes/:id(/*)": async (req, ctx) => {
-    const { id: volume } = ctx.params;
-
-    const durable = getObjectFor(volume, ctx);
-
-    return durable.fetch(req);
-  },
+  "/volumes/:id/*": async (req, ctx) =>
+    getObjectFor(ctx.params.id, ctx).fetch(req),
+  "/volumes/:id": async (req, ctx) =>
+    getObjectFor(ctx.params.id, ctx).fetch(req),
 });
 
 export default {

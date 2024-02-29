@@ -200,8 +200,8 @@ const tieredFS = (...fastToSlow: MFFS[]): MFFS => {
   const [fastest] = fastToSlow;
 
   return {
-    readdir: fastest.readdir,
-    readFile: fastest.readFile,
+    readdir: (path) => fastest.readdir(path),
+    readFile: (path) => fastest.readFile(path),
     unlink: async (filepath) => {
       await Promise.all(
         fastToSlow.map((c) => c.unlink(filepath)),
@@ -214,6 +214,12 @@ const tieredFS = (...fastToSlow: MFFS[]): MFFS => {
     },
   };
 };
+
+export interface VolumeListResponse {
+  fs: Record<string, { content: string | null }>;
+  timestamp: number;
+  volumeId: string;
+}
 
 export class Realtime implements DurableObject {
   state: DurableObjectState;
@@ -251,7 +257,8 @@ export class Realtime implements DurableObject {
     const routes: Routes = {
       "/volumes/:id/files/*": {
         GET: async (req, { params }) => {
-          const { "0": path, id: volumeId } = params;
+          const volumeId = params.id;
+          const path = `/${params["0"]}`;
           const withContent =
             new URL(req.url).searchParams.get("content") === "true";
 
@@ -262,13 +269,13 @@ export class Realtime implements DurableObject {
             };
           }
 
-          const body: {
-            fs: Record<string, { content: string | null }>;
-            timestamp: number;
-            volumeId: string;
-          } = { fs, timestamp: this.timestamp, volumeId };
-
-          return Response.json(body);
+          return Response.json(
+            {
+              timestamp: this.timestamp,
+              volumeId,
+              fs,
+            } satisfies VolumeListResponse,
+          );
         },
       },
       "/volumes/:id/files": {
@@ -328,8 +335,6 @@ export class Realtime implements DurableObject {
                 deleted: newContent === "null",
               });
             } catch (error) {
-              console.error(error);
-
               results.push({ accepted: false, path, content });
             }
           }
