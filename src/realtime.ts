@@ -182,13 +182,10 @@ const createDurableFS = (state: DurableObjectState): MFFS => {
       });
 
       const files: string[] = [];
+      const base = metaKey("");
 
       for (const key of match.keys()) {
-        const base = key.replace(filepath, "");
-
-        if (base.lastIndexOf("/") === 0) {
-          files.push(base);
-        }
+        files.push(key.replace(base, ""));
       }
 
       return files;
