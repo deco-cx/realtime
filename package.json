@@ -16,7 +16,6 @@
 	"dependencies": {
 		"esm": "^3.2.25",
 		"fast-json-patch": "^3.1.1",
-		"hono": "^4.0.5",
 		"jsonwebtoken": "^9.0.2"
 	}
 }

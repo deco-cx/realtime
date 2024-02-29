@@ -1,16 +1,6 @@
-import { Env, MiddlewareHandler } from "hono";
-import { HTTPException } from "hono/http-exception";
 import { verify } from "../djwt.js";
 import { newJwksIssuer } from "../security/jwks.ts";
 import { JwtPayload } from "../security/jwt.ts";
-
-declare module "hono" {
-  interface ContextVariableMap {
-    principal: JwtPayload;
-    checkIsAllowed: (wkflow: unknown) => void;
-    namespace: string;
-  }
-}
 
 const matchPart = (urnPart: string, otherUrnPart: string) =>
   urnPart === "*" || otherUrnPart === urnPart;

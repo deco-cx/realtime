@@ -1,12 +1,6 @@
-import {
-  Acked,
-  ClientMessages,
-  FSError,
-  hash,
-  ServerMessages,
-} from "../client.ts";
-import { type Env } from "./index.ts";
 import { applyReducer, type Operation } from "fast-json-patch";
+import { type Env } from "./index.ts";
+import { createRouter, Router, Routes } from "./router.ts";
 
 export const getObjectFor = (volume: string, ctx: { env: Env }) =>
   ctx.env.REALTIME.get(
@@ -15,12 +9,6 @@ export const getObjectFor = (volume: string, ctx: { env: Env }) =>
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-type Context = { params: Record<string, string> };
-
-type Handler = (req: Request, ctx: Context) => Promise<Response>;
-
-type Route = Handler | Record<string, Handler>;
 
 export type FilePatch = JSONFilePatch;
 
@@ -37,11 +25,21 @@ export interface FilePatchResult {
   path: string;
   accepted: boolean;
   content?: string;
+  deleted?: boolean;
 }
 
 export interface VolumePatchResponse {
   results: FilePatchResult[];
+  timestamp: number;
 }
+
+export interface FsEvent {
+  path: string;
+  deleted?: boolean;
+  timestamp: number;
+}
+
+export type ServerEvent = FsEvent;
 
 export interface File {
   content: string;
@@ -62,19 +60,40 @@ export class RealtimeError extends Error {
   }
 }
 
-interface RealtimeFS {
-  fs: FileSystemNode;
+export type ErrorCode =
+  | "INTERNAL_SERVER_ERROR"
+  | "ENOENT"
+  | "ENOTDIR"
+  | "EEXIST"
+  | "ENOTEMPTY"
+  | "ESTALE";
+
+export class FSError extends Error {
+  constructor(
+    public code: ErrorCode,
+    message?: string,
+  ) {
+    super(message);
+  }
 }
+
+const ignore = (code: ErrorCode) => (e: unknown) => {
+  if (e instanceof FSError && e.code === code) {
+    return null;
+  }
+  throw e;
+};
 
 interface MFFS {
   writeFile: (filepath: string, content: string) => Promise<void>;
   readFile: (filepath: string) => Promise<string | null>;
   readdir: (root: string) => Promise<string[]>;
+  unlink: (filepath: string) => Promise<void>;
 }
 
 const createMemFS = (root: FileSystemNode = {}): MFFS => {
   return {
-    readFile: async (path: string): Promise<string | null> => {
+    readFile: async (path: string): Promise<string> => {
       const file = root[path];
 
       if (!file) {
@@ -85,6 +104,9 @@ const createMemFS = (root: FileSystemNode = {}): MFFS => {
     },
     writeFile: async (path, content) => {
       root[path] = { content };
+    },
+    unlink: async (path): Promise<void> => {
+      delete root[path];
     },
     readdir: async (path): Promise<string[]> =>
       Object.keys(root).filter((x) => x.startsWith(path)),
@@ -103,7 +125,7 @@ const createDurableFS = (state: DurableObjectState): MFFS => {
     `chunk::${filepath}::${chunk}`;
 
   return {
-    readFile: async (filepath: string): Promise<string | null> => {
+    readFile: async (filepath: string): Promise<string> => {
       const meta = await state.storage.get<Metadata>(metaKey(filepath));
 
       if (!meta) {
@@ -143,6 +165,17 @@ const createDurableFS = (state: DurableObjectState): MFFS => {
       await state.storage.put<Uint8Array>(chunks);
       await state.storage.put<Metadata>(metaKey(filepath), metadata);
     },
+    unlink: async (filepath: string) => {
+      const metaLocator = metaKey(filepath);
+      const meta = await state.storage.get<Metadata>(metaLocator);
+
+      if (!meta) {
+        return;
+      }
+
+      await state.storage.delete(metaLocator);
+      await state.storage.delete(meta.chunks);
+    },
     readdir: async (filepath: string) => {
       const match = await state.storage.list<Metadata>({
         prefix: metaKey(filepath),
@@ -163,29 +196,31 @@ const createDurableFS = (state: DurableObjectState): MFFS => {
   };
 };
 
-const tieredFS = (fast: MFFS, slow: MFFS): MFFS => {
+const tieredFS = (...fastToSlow: MFFS[]): MFFS => {
+  const [fastest] = fastToSlow;
+
   return {
-    readdir: fast.readdir,
-    readFile: fast.readFile,
+    readdir: fastest.readdir,
+    readFile: fastest.readFile,
+    unlink: async (filepath) => {
+      await Promise.all(
+        fastToSlow.map((c) => c.unlink(filepath)),
+      );
+    },
     writeFile: async (filepath, content) => {
-      await Promise.all([
-        slow.writeFile(filepath, content),
-        fast.writeFile(filepath, content),
-      ]);
+      await Promise.all(
+        fastToSlow.map((c) => c.writeFile(filepath, content)),
+      );
     },
   };
 };
 
-interface FileSystem {
-  fs: FileSystemNode;
-  timestamp: number;
-  volumeId: string;
-}
+const EMPTY = "{}";
 
 export class Realtime implements DurableObject {
   state: DurableObjectState;
   sessions: Array<{ socket: WebSocket }> = [];
-  routes: [URLPattern, Route][];
+  router: Router;
 
   root: FileSystemNode;
   fs: MFFS;
@@ -200,6 +235,7 @@ export class Realtime implements DurableObject {
 
     this.fs = tieredFS(memFS, durableFS);
 
+    // init memFS with durable content
     this.state.blockConcurrencyWhile(async () => {
       const paths = await durableFS.readdir("/");
 
@@ -214,9 +250,9 @@ export class Realtime implements DurableObject {
       }
     });
 
-    const routes: Record<string, Route> = {
+    const routes: Routes = {
       "/volumes/:id/files/*": {
-        get: async (req, { params }) => {
+        GET: async (req, { params }) => {
           const { "0": path, id: volumeId } = params;
           const withContent = new URL(req.url).searchParams.get("content") === "true";
 
@@ -227,13 +263,38 @@ export class Realtime implements DurableObject {
             };
           }
 
-          const body: FileSystem = { fs, timestamp: Date.now(), volumeId };
+          const body: {
+            fs: Record<string, { content: string | null }>;
+            timestamp: number;
+            volumeId: string;
+          } = { fs, timestamp: Date.now(), volumeId };
 
           return Response.json(body);
         },
       },
       "/volumes/:id/files": {
-        put: async (req: Request) => {
+        GET: async (req: Request) => {
+          if (req.headers.get("Upgrade") !== "websocket") {
+            return new Response("Missing header Upgrade: websocket ", {
+              status: 400,
+            });
+          }
+
+          const { 0: client, 1: socket } = new WebSocketPair();
+
+          this.sessions.push({ socket });
+
+          socket.addEventListener(
+            "close",
+            () =>
+              this.sessions = this.sessions.filter((s) => s.socket !== socket),
+          );
+
+          socket.accept();
+
+          return new Response(null, { status: 101, webSocket: client });
+        },
+        PUT: async (req: Request) => {
           const fs = await req.json() as FileSystemNode;
 
           await Promise.all(
@@ -246,21 +307,27 @@ export class Realtime implements DurableObject {
         },
       },
       "/volumes/:id": {
-        patch: async (req: Request) => {
+        PATCH: async (req: Request) => {
           const { patches } = await req.json() as VolumePatchRequest;
 
           const results: FilePatchResult[] = [];
 
           for (const patch of patches) {
             const { path, patches: operations } = patch;
-            const content = await this.fs.readFile(path) ?? "{}";
+            const content =
+              await this.fs.readFile(path).catch(ignore("ENOENT")) ?? EMPTY;
 
             try {
               const newContent = JSON.stringify(
                 operations.reduce(applyReducer, JSON.parse(content)),
               );
 
-              results.push({ accepted: true, path, content: newContent });
+              results.push({
+                accepted: true,
+                path,
+                content: newContent,
+                deleted: newContent === EMPTY,
+              });
             } catch (error) {
               console.error(error);
 
@@ -268,20 +335,38 @@ export class Realtime implements DurableObject {
             }
           }
 
+          const timestamp = Date.now();
           const shouldWrite = results.every((r) => r.accepted);
 
           if (shouldWrite) {
             await Promise.all(
-              results.map((r) =>
-                this.fs
-                  .writeFile(r.path, r.content!)
-                  .catch(() => r.accepted = false)
-              ),
+              results.map(async (r) => {
+                try {
+                  if (r.deleted) {
+                    await this.fs.unlink(r.path);
+                  } else {
+                    await this.fs.writeFile(r.path, r.content!);
+                  }
+                  this.fs;
+                } catch (error) {
+                  console.error(error);
+                  r.accepted = false;
+                }
+              }),
             );
+
+            const shouldBroadcast = results.every((r) => r.accepted);
+            if (shouldBroadcast) {
+              for (const result of results) {
+                const { path, deleted } = result;
+                this.broadcast({ path, timestamp, deleted });
+              }
+            }
           }
 
           return Response.json(
             {
+              timestamp,
               results: results.map((r) =>
                 r.accepted ? { ...r, content: undefined } : r
               ),
@@ -290,129 +375,16 @@ export class Realtime implements DurableObject {
         },
       },
     };
-    this.routes = Object.entries(routes).map(([pathname, handler]) =>
-      [new URLPattern({ pathname }), handler] as const
-    );
+    this.router = createRouter(routes);
   }
 
-  broadcast(msg: ServerMessages) {
+  broadcast(msg: ServerEvent) {
     for (const session of this.sessions) {
       session.socket.send(JSON.stringify(msg));
     }
   }
 
   async fetch(request: Request) {
-    const route = this.routes.find(([r]) => r.test(request.url));
-
-    if (route) {
-      const [pattern, handlerOrRecord] = route;
-
-      const handler = typeof handlerOrRecord === "function"
-        ? handlerOrRecord
-        : handlerOrRecord[request.method.toLowerCase()];
-
-      const match = pattern.exec(request.url);
-
-      if (handler) {
-        return handler(request, { params: match?.pathname.groups ?? {} });
-      }
-    }
-
-    return new Response(null, { status: 404 });
-
-    if (request.headers.get("Upgrade") !== "websocket") {
-      return new Response("Only websockets are supported", { status: 400 });
-    }
-
-    const { 0: client, 1: socket } = new WebSocketPair();
-
-    this.sessions.push({ socket });
-
-    const send = (msg: Acked<ServerMessages>) =>
-      socket.send(JSON.stringify(msg));
-
-    const parse = (data: string | ArrayBuffer) => {
-      if (typeof data === "string") {
-        return JSON.parse(data) as Acked<ClientMessages>;
-      }
-      throw new Error("Malformed socket event");
-    };
-
-    const messageHandler = async (event: MessageEvent) => {
-      const msg = parse(event.data);
-
-      try {
-        switch (msg.type) {
-          case "readFile": {
-            const { ack, filepath } = msg;
-            const content = await this.readFile(filepath);
-
-            send({ type: "file-fetched", data: content, ack });
-
-            return;
-          }
-          case "writeFile": {
-            const { filepath, data, prevHash, ack } = msg;
-            const { hash } = await this.writeFile(filepath, data, prevHash);
-
-            send({ type: "operation-succeeded", ack });
-            this.broadcast({ type: "file-updated", filepath, hash });
-
-            return;
-          }
-          case "unlink": {
-            const { filepath, ack } = msg;
-
-            await this.unlink(filepath);
-
-            send({ type: "operation-succeeded", ack });
-            this.broadcast({ type: "file-unlinked", filepath });
-
-            return;
-          }
-          case "du": {
-            const { filepath, ack } = msg;
-
-            const du = await this.du(filepath);
-
-            send({ type: "operation-succeeded", data: du, ack });
-
-            return;
-          }
-          case "readdir": {
-            const { filepath, ack } = msg;
-
-            const result = await this.readdir(filepath);
-
-            send({ type: "operation-succeeded", data: result, ack });
-
-            return;
-          }
-          default:
-            throw new Error(`Unknown socket event ${JSON.stringify(msg)}`);
-        }
-      } catch (error: any) {
-        send({
-          type: "operation-failed",
-          code: error.code ?? "INTERNAL_SERVER_ERROR",
-          reason: error.message || "unknown",
-          ack: msg.ack,
-        });
-      }
-    };
-
-    socket.addEventListener(
-      "close",
-      () => this.sessions = this.sessions.filter((s) => s.socket !== socket),
-    );
-
-    socket.addEventListener(
-      "message",
-      (e) => messageHandler(e).catch(console.error),
-    );
-
-    socket.accept();
-
-    return new Response(null, { status: 101, webSocket: client });
+    return this.router(request);
   }
 }

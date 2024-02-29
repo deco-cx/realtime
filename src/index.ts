@@ -1,6 +1,7 @@
-import { Hono } from "hono";
-import { getRouter } from "./api/router.ts";
+import { createRouter } from "./router.ts";
+import { wellKnownJWKSHandler } from "./security/identity.ts";
 import { setFromString } from "./security/keys.ts";
+import { getObjectFor } from "./realtime.ts";
 
 export interface Env {
   REALTIME: DurableObjectNamespace;
@@ -8,12 +9,27 @@ export interface Env {
   WORKER_PRIVATE_KEY: string;
 }
 
+const router = createRouter<{ env: Env }>({
+  "/.well_known/jwks.json": wellKnownJWKSHandler,
+  "/volumes/:id(/*)": async (req, ctx) => {
+    const { id: volume } = ctx.params;
+
+    const durable = getObjectFor(volume, ctx);
+
+    return durable.fetch(req);
+  },
+});
+
 export default {
-  async fetch(r: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(r: Request, env: Env): Promise<Response> {
     setFromString(env.WORKER_PUBLIC_KEY, env.WORKER_PRIVATE_KEY);
 
-    const router = await getRouter(new Hono());
-    return await router.fetch(r, env, ctx);
+    try {
+      return await router(r, { env });
+    } catch (error) {
+      console.error(error);
+      return new Response("Internal Server Error", { status: 500 });
+    }
   },
 };
 
