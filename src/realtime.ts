@@ -308,8 +308,6 @@ export class Realtime implements DurableObject {
 
           return new Response(null, { status: 204 });
         },
-      },
-      "/volumes/:id": {
         PATCH: async (req: Request) => {
           const { patches } = await req.json() as VolumePatchRequest;
 
@@ -375,6 +373,7 @@ export class Realtime implements DurableObject {
           );
         },
       },
+      "/volumes/:id": {},
     };
     this.router = createRouter(routes);
   }
