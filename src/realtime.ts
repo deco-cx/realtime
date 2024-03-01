@@ -89,12 +89,15 @@ interface MFFS {
   readFile: (filepath: string) => Promise<string | null>;
   readdir: (root: string) => Promise<string[]>;
   unlink: (filepath: string) => Promise<void>;
+  clear: () => Promise<void>;
 }
 
-const createMemFS = (root: FileSystemNode = {}): MFFS => {
+const createMemFS = (): MFFS => {
+  const root = new Map<string, File>();
+
   return {
     readFile: async (path: string): Promise<string> => {
-      const file = root[path];
+      const file = root.get(path);
 
       if (!file) {
         throw new FSError("ENOENT");
@@ -103,13 +106,16 @@ const createMemFS = (root: FileSystemNode = {}): MFFS => {
       return file.content;
     },
     writeFile: async (path, content) => {
-      root[path] = { content };
+      root.set(path, { content });
     },
     unlink: async (path): Promise<void> => {
-      delete root[path];
+      root.delete(path);
     },
     readdir: async (path): Promise<string[]> =>
-      Object.keys(root).filter((x) => x.startsWith(path)),
+      [...root.keys()].filter((x) => x.startsWith(path)),
+    clear: async () => {
+      root.clear();
+    },
   };
 };
 
@@ -190,6 +196,7 @@ const createDurableFS = (state: DurableObjectState): MFFS => {
 
       return files;
     },
+    clear: async () => state.storage.deleteAll(),
   };
 };
 
@@ -199,14 +206,19 @@ const tieredFS = (...fastToSlow: MFFS[]): MFFS => {
   return {
     readdir: (path) => fastest.readdir(path),
     readFile: (path) => fastest.readFile(path),
+    clear: async () => {
+      await Promise.all(
+        fastToSlow.map((fs) => fs.clear()),
+      );
+    },
     unlink: async (filepath) => {
       await Promise.all(
-        fastToSlow.map((c) => c.unlink(filepath)),
+        fastToSlow.map((fs) => fs.unlink(filepath)),
       );
     },
     writeFile: async (filepath, content) => {
       await Promise.all(
-        fastToSlow.map((c) => c.writeFile(filepath, content)),
+        fastToSlow.map((fs) => fs.writeFile(filepath, content)),
       );
     },
   };
@@ -299,6 +311,9 @@ export class Realtime implements DurableObject {
         },
         PUT: async (req: Request) => {
           const fs = await req.json() as FileSystemNode;
+
+          // clears filesystem before writting new files
+          await this.fs.clear();
 
           await Promise.all(
             Object.entries(fs).map(([path, value]) =>
