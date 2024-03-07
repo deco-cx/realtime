@@ -26,7 +26,7 @@ export interface TextFilePatch extends BaseFilePatch {
 }
 
 export interface TextFileSet extends BaseFilePatch {
-  content: string;
+  content: string | null;
 }
 
 export interface TextFielPatchOperationBase {
@@ -376,10 +376,14 @@ export class Realtime implements DurableObject {
             } else if (isTextFileSet(patch)) {
               const { path, content } = patch;
               try {
-                await this.fs.writeFile(path, content);
-                results.push({ accepted: true, path, content });
+                if (!content) {
+                  await this.fs.writeFile(path, "");
+                } else {
+                  await this.fs.writeFile(path, content);
+                }
+                results.push({ accepted: true, path, content: content ?? "" });
               } catch (error) {
-                results.push({ accepted: false, path, content });
+                results.push({ accepted: false, path, content: content ?? "" });
               }
             } else {
               const { path, operations, timestamp } = patch;
