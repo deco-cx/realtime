@@ -1,10 +1,11 @@
+import { getObjectFor } from "./realtime.ts";
 import { createRouter } from "./router.ts";
 import { wellKnownJWKSHandler } from "./security/identity.ts";
 import { setFromString } from "./security/keys.ts";
-import { getObjectFor } from "./realtime.ts";
 
 export interface Env {
   REALTIME: DurableObjectNamespace;
+  EPHEMERAL_REALTIME: DurableObjectNamespace;
   WORKER_PUBLIC_KEY: string;
   WORKER_PRIVATE_KEY: string;
 }
@@ -30,4 +31,4 @@ export default {
   },
 };
 
-export { Realtime } from "./realtime.ts";
+export { EphemeralRealtime, Realtime } from "./realtime.ts";

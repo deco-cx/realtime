@@ -1,19 +1,63 @@
 import { applyReducer, type Operation } from "fast-json-patch";
+import { BinaryIndexedTree } from "./bit.ts";
 import { type Env } from "./index.ts";
 import { createRouter, Router, Routes } from "./router.ts";
 
-export const getObjectFor = (volume: string, ctx: { env: Env }) =>
-  ctx.env.REALTIME.get(
-    ctx.env.REALTIME.idFromName(volume),
+export const getObjectFor = (volume: string, ctx: { env: Env }) => {
+  const object = volume.startsWith("ephemeral:")
+    ? ctx.env.EPHEMERAL_REALTIME
+    : ctx.env.REALTIME;
+  return object.get(
+    object.idFromName(volume),
   ) as unknown as Realtime;
+};
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-export type FilePatch = JSONFilePatch;
-
-export interface JSONFilePatch {
+export interface BaseFilePatch {
   path: string;
+}
+export type TextFilePatchOperation = InsertAtOperation | DeleteAtOperation;
+
+export interface TextFilePatch extends BaseFilePatch {
+  operations: TextFilePatchOperation[];
+  timestamp: number;
+}
+
+export interface TextFileSet extends BaseFilePatch {
+  content: string;
+}
+
+export interface TextFielPatchOperationBase {
+  at: number;
+}
+
+export interface InsertAtOperation extends TextFielPatchOperationBase {
+  text: string;
+}
+
+export interface DeleteAtOperation extends TextFielPatchOperationBase {
+  length: number;
+}
+
+const isDeleteOperation = (
+  op: TextFilePatchOperation,
+): op is DeleteAtOperation => {
+  return (op as DeleteAtOperation).length !== undefined;
+};
+
+export type FilePatch = JSONFilePatch | TextFilePatch | TextFileSet;
+
+export const isJSONFilePatch = (patch: FilePatch): patch is JSONFilePatch => {
+  return (patch as JSONFilePatch).patches !== undefined;
+};
+
+export const isTextFileSet = (patch: FilePatch): patch is TextFileSet => {
+  return (patch as TextFileSet).content !== undefined;
+};
+
+export interface JSONFilePatch extends BaseFilePatch {
   patches: Operation[];
 }
 
@@ -231,6 +275,7 @@ export interface VolumeListResponse {
 }
 
 export class Realtime implements DurableObject {
+  textState: Map<number, BinaryIndexedTree>;
   state: DurableObjectState;
   sessions: Array<{ socket: WebSocket }> = [];
   fs: MFFS;
@@ -238,30 +283,10 @@ export class Realtime implements DurableObject {
   router: Router;
   timestamp: number;
 
-  constructor(state: DurableObjectState) {
+  constructor(state: DurableObjectState, ephemeral = false) {
+    this.textState = new Map();
     this.state = state;
-
     this.timestamp = Date.now();
-
-    const durableFS = createDurableFS(state);
-    const memFS = createMemFS();
-
-    this.fs = tieredFS(memFS, durableFS);
-
-    // init memFS with durable content
-    this.state.blockConcurrencyWhile(async () => {
-      const paths = await durableFS.readdir("/");
-
-      for (const path of paths) {
-        const content = await durableFS.readFile(path);
-
-        if (!content) {
-          continue;
-        }
-
-        await memFS.writeFile(path, content);
-      }
-    });
 
     const routes: Routes = {
       "/volumes/:id/files/*": {
@@ -329,27 +354,103 @@ export class Realtime implements DurableObject {
           const results: FilePatchResult[] = [];
 
           for (const patch of patches) {
-            const { path, patches: operations } = patch;
-            const content =
-              await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "{}";
+            if (isJSONFilePatch(patch)) {
+              const { path, patches: operations } = patch;
+              const content =
+                await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "{}";
 
-            try {
-              const newContent = JSON.stringify(
-                operations.reduce(applyReducer, JSON.parse(content)),
+              try {
+                const newContent = JSON.stringify(
+                  operations.reduce(applyReducer, JSON.parse(content)),
+                );
+
+                results.push({
+                  accepted: true,
+                  path,
+                  content: newContent,
+                  deleted: newContent === "null",
+                });
+              } catch (error) {
+                results.push({ accepted: false, path, content });
+              }
+            } else if (isTextFileSet(patch)) {
+              const { path, content } = patch;
+              try {
+                await this.fs.writeFile(path, content);
+                results.push({ accepted: true, path, content });
+              } catch (error) {
+                results.push({ accepted: false, path, content });
+              }
+            } else {
+              const { path, operations, timestamp } = patch;
+              const content =
+                await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "";
+              if (!this.textState.has(timestamp)) { // durable was restarted
+                results.push({ accepted: false, path, content });
+                continue;
+              }
+              const rollbacks: Array<() => void> = [];
+              const bit = this.textState.get(timestamp) ??
+                new BinaryIndexedTree(2 ** 8);
+              const [result, success] = operations.reduce(
+                ([txt, success], op) => {
+                  if (!success) {
+                    return [txt, success];
+                  }
+                  if (isDeleteOperation(op)) {
+                    const { at, length } = op;
+                    const offset = bit.rangeQuery(0, at) + at;
+                    if (offset < 0) {
+                      return [txt, false];
+                    }
+                    const before = txt.slice(0, offset);
+                    const after = txt.slice(offset + length);
+
+                    // Update BIT for deletion operation
+                    bit.update(at, -length); // Subtract length from the index
+                    rollbacks.push(() => {
+                      bit.update(at, length);
+                    });
+                    return [`${before}${after}`, true];
+                  }
+                  const { at, text } = op;
+                  const offset = bit.rangeQuery(0, at) + at;
+                  if (offset < 0) {
+                    return [txt, false];
+                  }
+
+                  const before = txt.slice(0, offset);
+                  const after = txt.slice(offset); // Use offset instead of at
+
+                  // Update BIT for insertion operation
+                  bit.update(at, text.length); // Add length of text at the index
+                  rollbacks.push(() => {
+                    bit.update(at, -text.length);
+                  });
+                  return [`${before}${text}${after}`, true];
+                },
+                [content, true],
               );
-
-              results.push({
-                accepted: true,
-                path,
-                content: newContent,
-                deleted: newContent === "null",
-              });
-            } catch (error) {
-              results.push({ accepted: false, path, content });
+              if (success) {
+                this.textState.set(timestamp, bit);
+                results.push({
+                  accepted: true,
+                  path,
+                  content: result,
+                });
+              } else {
+                rollbacks.map((rollback) => rollback());
+                results.push({
+                  accepted: false,
+                  path,
+                  content,
+                });
+              }
             }
           }
 
           this.timestamp = Date.now();
+          this.textState.set(this.timestamp, new BinaryIndexedTree(2 ** 8));
           const shouldWrite = results.every((r) => r.accepted);
 
           if (shouldWrite) {
@@ -361,7 +462,6 @@ export class Realtime implements DurableObject {
                   } else {
                     await this.fs.writeFile(r.path, r.content!);
                   }
-                  this.fs;
                 } catch (error) {
                   console.error(error);
                   r.accepted = false;
@@ -391,6 +491,28 @@ export class Realtime implements DurableObject {
       "/volumes/:id": {},
     };
     this.router = createRouter(routes);
+    const memFS = createMemFS();
+
+    if (ephemeral) {
+      this.fs = memFS;
+      return;
+    }
+    const durableFS = createDurableFS(state);
+    this.fs = tieredFS(memFS, durableFS);
+    // init memFS with durable content
+    this.state.blockConcurrencyWhile(async () => {
+      const paths = await durableFS.readdir("/");
+
+      for (const path of paths) {
+        const content = await durableFS.readFile(path);
+
+        if (!content) {
+          continue;
+        }
+
+        await memFS.writeFile(path, content);
+      }
+    });
   }
 
   broadcast(msg: ServerEvent) {
@@ -401,5 +523,11 @@ export class Realtime implements DurableObject {
 
   async fetch(request: Request) {
     return this.router(request);
+  }
+}
+
+export class EphemeralRealtime extends Realtime {
+  constructor(state: DurableObjectState) {
+    super(state, true);
   }
 }

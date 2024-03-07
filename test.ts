@@ -105,6 +105,10 @@ const tests = {
           path: "/pdp.json",
           patches: jp.compare({}, { "title": "pdp" }),
         },
+        {
+          path: "/sections/ProductShelf.tsx",
+          content: `BC`,
+        },
       ],
     });
 
@@ -121,6 +125,10 @@ const tests = {
       vlr.fs["/pdp.json"]?.content,
       JSON.stringify({ "title": "pdp" }),
     );
+    assertEquals(
+      vlr.fs["/sections/ProductShelf.tsx"]?.content,
+      "BC",
+    );
   },
   "Should not return value": async () => {
     const vlr = await realtime.list({ path: "/" });
@@ -133,12 +141,99 @@ const tests = {
       vlr.fs["/pdp.json"]?.content,
       null,
     );
+    assertEquals(
+      vlr.fs["/sections/ProductShelf.tsx"]?.content,
+      null,
+    );
   },
   "should return specific listing value": async () => {
     const vlr = await realtime.list({ path: "/home.json" });
 
     assertAll(vlr.fs["/home.json"]);
     assertEquals(vlr.fs["/pdp.json"], undefined);
+  },
+  "should accept text patch": async () => {
+    const shelf = "/sections/ProductShelf.tsx";
+    const vlr = await realtime.list({ path: shelf, content: true });
+    assertEquals(vlr.fs[shelf]?.content, "BC");
+    const { results } = await realtime.patch({
+      patches: [
+        {
+          path: shelf,
+          operations: [{
+            text: "A",
+            at: 0,
+          }],
+          timestamp: vlr.timestamp,
+        },
+      ],
+    });
+    const snapshot = JSON.stringify([{
+      accepted: true,
+      path: shelf,
+    }]);
+    assertEquals(JSON.stringify(results), snapshot);
+
+    const vlrUpdated = await realtime.list({ path: shelf, content: true });
+    assertEquals(vlrUpdated.fs[shelf]?.content, "ABC");
+  },
+  "should accept multiple text patch": async () => {
+    const shelf = "/sections/ProductShelf.tsx";
+    const vlr = await realtime.list({ path: shelf, content: true });
+    assertEquals(vlr.fs[shelf]?.content, "ABC");
+    const { results } = await realtime.patch({
+      patches: [
+        {
+          path: shelf,
+          operations: [{
+            text: "!",
+            at: 0,
+          }, {
+            text: "Z",
+            at: 0,
+          }],
+          timestamp: vlr.timestamp,
+        },
+      ],
+    });
+    const snapshot = JSON.stringify([{
+      accepted: true,
+      path: shelf,
+    }]);
+    assertEquals(JSON.stringify(results), snapshot);
+
+    const vlrUpdated = await realtime.list({ path: shelf, content: true });
+    assertEquals(vlrUpdated.fs[shelf]?.content, "!ZABC");
+
+    const { results: resultsWithOldTimestamp } = await realtime.patch({
+      patches: [
+        {
+          path: shelf,
+          operations: [{
+            text: "!",
+            at: 3,
+          }, {
+            length: 1,
+            at: 2,
+          }],
+          timestamp: vlr.timestamp, // from an old timestamp insert ! at the end, AB! as result
+        },
+      ],
+    });
+    const snapShotWithOldTimestamp = JSON.stringify([{
+      accepted: true,
+      path: shelf,
+    }]);
+    assertEquals(
+      JSON.stringify(resultsWithOldTimestamp),
+      snapShotWithOldTimestamp,
+    );
+
+    const vlrWithOldTimestamp = await realtime.list({
+      path: shelf,
+      content: true,
+    });
+    assertEquals(vlrWithOldTimestamp.fs[shelf]?.content, "!ZAB!");
   },
   "should not accept patch because of conflicts": async () => {
     const { results } = await realtime.patch({
