@@ -1,4 +1,5 @@
 import * as fjp from "fast-json-patch";
+import { diff } from "./src/crdt/text.ts";
 import type {
   FileSystemNode,
   ServerEvent,
@@ -94,6 +95,33 @@ const assertAll = (...elems: unknown[]) => {
 };
 
 const tests = {
+  "diff should calculate text diff": async () => {
+    const from = "BC";
+    const to = "ABC";
+    assertEquals(
+      JSON.stringify(diff(from, to)),
+      JSON.stringify([{ at: 0, text: "A" }]),
+    );
+  },
+  "diff should calculate text diff with deletions": async () => {
+    const from = "BC";
+    const to = "AB";
+    assertEquals(
+      JSON.stringify(diff(from, to)),
+      JSON.stringify([{ at: 0, text: "A" }, { at: 1, length: 1 }]),
+    );
+  },
+  "diff should calculate text longer texts": async () => {
+    const from = "Lorem ipsum abcd !";
+    const to = "Lom ips!!!um abcd";
+    assertEquals(
+      JSON.stringify(diff(from, to)),
+      JSON.stringify([{ at: 2, length: 2 }, { at: 9, text: "!!!" }, {
+        at: 16,
+        length: 2,
+      }]),
+    );
+  },
   "Should be accepted": async () => {
     const { results } = await realtime.patch({
       patches: [
@@ -209,10 +237,10 @@ const tests = {
       patches: [
         {
           path: shelf,
-          operations: [{
+          operations: [{ // ABC!
             text: "!",
             at: 3,
-          }, {
+          }, { // AB!
             length: 1,
             at: 2,
           }],

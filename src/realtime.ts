@@ -1,5 +1,6 @@
 import { applyReducer, type Operation } from "fast-json-patch";
-import { BinaryIndexedTree } from "./bit.ts";
+import { BinaryIndexedTree } from "./crdt/bit.ts";
+import { apply } from "./crdt/text.ts";
 import { type Env } from "./index.ts";
 import { createRouter, Router, Routes } from "./router.ts";
 
@@ -20,15 +21,6 @@ export interface BaseFilePatch {
 }
 export type TextFilePatchOperation = InsertAtOperation | DeleteAtOperation;
 
-export interface TextFilePatch extends BaseFilePatch {
-  operations: TextFilePatchOperation[];
-  timestamp: number;
-}
-
-export interface TextFileSet extends BaseFilePatch {
-  content: string | null;
-}
-
 export interface TextFielPatchOperationBase {
   at: number;
 }
@@ -40,12 +32,14 @@ export interface InsertAtOperation extends TextFielPatchOperationBase {
 export interface DeleteAtOperation extends TextFielPatchOperationBase {
   length: number;
 }
+export interface TextFilePatch extends BaseFilePatch {
+  operations: TextFilePatchOperation[];
+  timestamp: number;
+}
 
-const isDeleteOperation = (
-  op: TextFilePatchOperation,
-): op is DeleteAtOperation => {
-  return (op as DeleteAtOperation).length !== undefined;
-};
+export interface TextFileSet extends BaseFilePatch {
+  content: string | null;
+}
 
 export type FilePatch = JSONFilePatch | TextFilePatch | TextFileSet;
 
@@ -393,48 +387,9 @@ export class Realtime implements DurableObject {
                 results.push({ accepted: false, path, content });
                 continue;
               }
-              const rollbacks: Array<() => void> = [];
               const bit = this.textState.get(timestamp) ??
-                new BinaryIndexedTree(2 ** 8);
-              const [result, success] = operations.reduce(
-                ([txt, success], op) => {
-                  if (!success) {
-                    return [txt, success];
-                  }
-                  if (isDeleteOperation(op)) {
-                    const { at, length } = op;
-                    const offset = bit.rangeQuery(0, at) + at;
-                    if (offset < 0) {
-                      return [txt, false];
-                    }
-                    const before = txt.slice(0, offset);
-                    const after = txt.slice(offset + length);
-
-                    // Update BIT for deletion operation
-                    bit.update(at, -length); // Subtract length from the index
-                    rollbacks.push(() => {
-                      bit.update(at, length);
-                    });
-                    return [`${before}${after}`, true];
-                  }
-                  const { at, text } = op;
-                  const offset = bit.rangeQuery(0, at) + at;
-                  if (offset < 0) {
-                    return [txt, false];
-                  }
-
-                  const before = txt.slice(0, offset);
-                  const after = txt.slice(offset); // Use offset instead of at
-
-                  // Update BIT for insertion operation
-                  bit.update(at, text.length); // Add length of text at the index
-                  rollbacks.push(() => {
-                    bit.update(at, -text.length);
-                  });
-                  return [`${before}${text}${after}`, true];
-                },
-                [content, true],
-              );
+                new BinaryIndexedTree();
+              const [result, success] = apply(content, operations, bit);
               if (success) {
                 this.textState.set(timestamp, bit);
                 results.push({
@@ -443,7 +398,6 @@ export class Realtime implements DurableObject {
                   content: result,
                 });
               } else {
-                rollbacks.map((rollback) => rollback());
                 results.push({
                   accepted: false,
                   path,
@@ -454,7 +408,7 @@ export class Realtime implements DurableObject {
           }
 
           this.timestamp = Date.now();
-          this.textState.set(this.timestamp, new BinaryIndexedTree(2 ** 8));
+          this.textState.set(this.timestamp, new BinaryIndexedTree());
           const shouldWrite = results.every((r) => r.accepted);
 
           if (shouldWrite) {
