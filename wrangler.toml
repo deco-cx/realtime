@@ -11,6 +11,10 @@ local_protocol = "http"
 name = "REALTIME"
 class_name = "Realtime"
 
+[[durable_objects.bindings]]
+name = "EPHEMERAL_REALTIME"
+class_name = "EphemeralRealtime"
+
 [[rules]]
 type = "ESModule"
 globs = ["**/*.ts"]
@@ -18,3 +22,7 @@ globs = ["**/*.ts"]
 [[migrations]]
 tag = "v1" # Should be unique for each entry
 new_classes = ["Realtime"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["EphemeralRealtime"]
