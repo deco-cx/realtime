@@ -279,7 +279,7 @@ export class Realtime implements DurableObject {
   router: Router;
   timestamp: number;
 
-  constructor(state: DurableObjectState, ephemeral = false) {
+  constructor(state: DurableObjectState, _env: Env, ephemeral = false) {
     this.textState = new Map();
     this.state = state;
     this.timestamp = Date.now();
@@ -492,7 +492,7 @@ export class Realtime implements DurableObject {
 }
 
 export class EphemeralRealtime extends Realtime {
-  constructor(state: DurableObjectState) {
-    super(state, true);
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env, true);
   }
 }
