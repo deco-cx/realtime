@@ -56,6 +56,7 @@ export interface JSONFilePatch extends BaseFilePatch {
 }
 
 export interface VolumePatchRequest {
+  messageId?: string;
   patches: FilePatch[];
 }
 
@@ -72,6 +73,7 @@ export interface VolumePatchResponse {
 }
 
 export interface FsEvent {
+  messageId?: string;
   path: string;
   deleted?: boolean;
   timestamp: number;
@@ -343,7 +345,7 @@ export class Realtime implements DurableObject {
           return new Response(null, { status: 204 });
         },
         PATCH: async (req: Request) => {
-          const { patches } = await req.json() as VolumePatchRequest;
+          const { patches, messageId } = await req.json() as VolumePatchRequest;
 
           const results: FilePatchResult[] = [];
 
@@ -431,7 +433,12 @@ export class Realtime implements DurableObject {
             if (shouldBroadcast) {
               for (const result of results) {
                 const { path, deleted } = result;
-                this.broadcast({ path, timestamp: this.timestamp, deleted });
+                this.broadcast({
+                  messageId,
+                  path,
+                  timestamp: this.timestamp,
+                  deleted,
+                });
               }
             }
           }
