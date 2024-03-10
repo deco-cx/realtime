@@ -2,7 +2,7 @@ import { applyReducer, type Operation } from "fast-json-patch";
 import { BinaryIndexedTree } from "./crdt/bit.ts";
 import { apply } from "./crdt/text.ts";
 import { type Env } from "./index.ts";
-import { createRouter, Router, Routes } from "./router.ts";
+import { Router, Routes, createRouter } from "./router.ts";
 
 export const getObjectFor = (volume: string, ctx: { env: Env }) => {
   const object = volume.startsWith("ephemeral:")
@@ -446,9 +446,7 @@ export class Realtime implements DurableObject {
           return Response.json(
             {
               timestamp: this.timestamp,
-              results: results.map((r) =>
-                r.accepted ? { ...r, content: undefined } : r
-              ),
+              results,
             } satisfies VolumePatchResponse,
           );
         },
