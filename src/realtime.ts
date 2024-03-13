@@ -2,7 +2,6 @@ import { applyReducer } from "fast-json-patch";
 import { BinaryIndexedTree } from "./crdt/bit.ts";
 import { apply } from "./crdt/text.ts";
 import { type Env } from "./index.ts";
-import { createRouter, Router, Routes } from "./router.ts";
 import {
   File,
   FilePatchResult,
@@ -13,6 +12,7 @@ import {
   VolumePatchRequest,
   VolumePatchResponse,
 } from "./realtime.types.ts";
+import { createRouter, Router, Routes } from "./router.ts";
 
 export const getObjectFor = (volume: string, ctx: { env: Env }) => {
   const object = volume.startsWith("ephemeral:")
@@ -228,11 +228,15 @@ export class Realtime implements DurableObject {
         GET: async (req, { params }) => {
           const volumeId = params.id;
           const path = decodeURI(`/${params["0"]}`);
-          const withContent =
-            new URL(req.url).searchParams.get("content") === "true";
+          const contentQs = new URL(req.url).searchParams.get("content");
+          const contentFilter: false | string = contentQs === "true"
+            ? "/"
+            : contentQs !== "false" && (contentQs ?? false);
 
           const fs: Record<string, { content: string | null }> = {};
           for (const key of await this.fs.readdir(path)) {
+            const withContent = contentFilter !== false &&
+              key.startsWith(contentFilter);
             fs[key] = {
               content: withContent ? await this.fs.readFile(key) : null,
             };
