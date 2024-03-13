@@ -1,12 +1,12 @@
 import * as fjp from "fast-json-patch";
 import { diff } from "./src/crdt/text.ts";
+import type { VolumeListResponse } from "./src/realtime.ts";
 import type {
   FileSystemNode,
   ServerEvent,
-  VolumeListResponse,
   VolumePatchRequest,
   VolumePatchResponse,
-} from "./src/realtime.ts";
+} from "./src/realtime.types.ts";
 
 const jp = fjp.default;
 
@@ -199,6 +199,7 @@ const tests = {
     const snapshot = JSON.stringify([{
       accepted: true,
       path: shelf,
+      content: "ABC",
     }]);
     assertEquals(JSON.stringify(results), snapshot);
 
@@ -227,6 +228,7 @@ const tests = {
     const snapshot = JSON.stringify([{
       accepted: true,
       path: shelf,
+      content: "!ZABC"
     }]);
     assertEquals(JSON.stringify(results), snapshot);
 
@@ -251,6 +253,7 @@ const tests = {
     const snapShotWithOldTimestamp = JSON.stringify([{
       accepted: true,
       path: shelf,
+      content: "!ZAB!"
     }]);
     assertEquals(
       JSON.stringify(resultsWithOldTimestamp),
