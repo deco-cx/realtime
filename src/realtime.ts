@@ -409,21 +409,22 @@ export class Realtime implements DurableObject {
       return;
     }
     const durableFS = createDurableFS(state);
-    this.fs = tieredFS(memFS, durableFS);
+    // this.fs = tieredFS(memFS, durableFS);
+    this.fs = durableFS
     // init memFS with durable content
-    this.state.blockConcurrencyWhile(async () => {
-      const paths = await durableFS.readdir("/");
+    // this.state.blockConcurrencyWhile(async () => {
+    //   const paths = await durableFS.readdir("/");
 
-      for (const path of paths) {
-        const content = await durableFS.readFile(path);
+    //   for (const path of paths) {
+    //     const content = await durableFS.readFile(path);
 
-        if (!content) {
-          continue;
-        }
+    //     if (!content) {
+    //       continue;
+    //     }
 
-        await memFS.writeFile(path, content);
-      }
-    });
+    //     await memFS.writeFile(path, content);
+    //   }
+    // });
   }
 
   broadcast(msg: ServerEvent) {
