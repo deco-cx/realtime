@@ -237,6 +237,11 @@ export class Realtime implements DurableObject {
           for (const key of await this.fs.readdir(path)) {
             const withContent = contentFilter !== false &&
               key.startsWith(contentFilter);
+
+            console.log(
+              JSON.stringify({ path, file: await this.fs.readFile(key) }),
+            );
+
             fs[key] = {
               content: withContent ? await this.fs.readFile(key) : null,
             };
