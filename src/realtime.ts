@@ -276,12 +276,19 @@ export class Realtime implements DurableObject {
         PUT: async (req: Request) => {
           const fs = await req.json() as FileSystemNode;
 
+          const ts = Date.now();
+          this.timestamp = ts;
           // clears filesystem before writting new files
           await this.fs.clear();
 
           await Promise.all(
             Object.entries(fs).map(([path, value]) =>
-              this.fs.writeFile(path, value.content)
+              this.fs.writeFile(path, value.content).then(
+                () => {
+                  // TODO (mcandeia) this is not notifying deleted files.
+                  this.broadcast({ path, timestamp: ts });
+                },
+              )
             ),
           );
 
