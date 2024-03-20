@@ -267,7 +267,7 @@ export class Realtime implements DurableObject {
             "close",
             (cls) => {
               this.sessions = this.sessions.filter((s) => s.socket !== socket);
-              socket.close(cls.code, "Durable Object is closing WebSocket")
+              socket.close(cls.code, "Durable Object is closing WebSocket");
             },
           );
 
