@@ -324,12 +324,13 @@ export class Realtime implements DurableObject {
             } else if (isTextFileSet(patch)) {
               const { path, content } = patch;
               try {
-                if (content === null) {
-                  await this.fs.unlink(path);
-                } else {
-                  await this.fs.writeFile(path, content);
-                }
-                results.push({ accepted: true, path, content: content ?? "" });
+                await this.fs.writeFile(path, content ?? "");
+                results.push({
+                  accepted: true,
+                  path,
+                  content: content ?? "",
+                  deleted: content === null,
+                });
               } catch (error) {
                 results.push({ accepted: false, path, content: content ?? "" });
               }
