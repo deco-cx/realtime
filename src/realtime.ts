@@ -1,4 +1,4 @@
-import { applyReducer } from "fast-json-patch";
+import fjp from "fast-json-patch";
 import { BinaryIndexedTree } from "./crdt/bit.ts";
 import { apply } from "./crdt/text.ts";
 import { type Env } from "./index.ts";
@@ -13,6 +13,12 @@ import {
   VolumePatchResponse,
 } from "./realtime.types.ts";
 import { createRouter, Router, Routes } from "./router.ts";
+import { upgradeWebSocket } from "./ws.ts";
+import type {
+  DurableObject,
+  DurableObjectState,
+} from "@cloudflare/workers-types";
+import { createDurableFS } from "./fs.ts";
 
 export const getObjectFor = (volume: string, ctx: { env: Env }) => {
   const object = volume.startsWith("ephemeral:")
@@ -22,9 +28,6 @@ export const getObjectFor = (volume: string, ctx: { env: Env }) => {
     object.idFromName(volume),
   ) as unknown as Realtime;
 };
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 export class RealtimeError extends Error {
   public status: number;
@@ -63,7 +66,7 @@ const ignore = (code: ErrorCode) => (e: unknown) => {
   throw e;
 };
 
-interface MFFS {
+export interface MFFS {
   writeFile: (filepath: string, content: string) => Promise<void>;
   readFile: (filepath: string) => Promise<string | null>;
   readdir: (root: string) => Promise<string[]>;
@@ -98,87 +101,6 @@ const createMemFS = (): MFFS => {
   };
 };
 
-const createDurableFS = (state: DurableObjectState): MFFS => {
-  interface Metadata {
-    chunks: string[];
-  }
-
-  const MAX_CHUNK_SIZE = 131072;
-
-  const metaKey = (filepath: string) => `meta::${filepath}`;
-  const chunkKey = (filepath: string, chunk: number) =>
-    `chunk::${filepath}::${chunk}`;
-
-  return {
-    readFile: async (filepath: string): Promise<string> => {
-      const meta = await state.storage.get<Metadata>(metaKey(filepath));
-
-      if (!meta) {
-        throw new FSError("ENOENT");
-      }
-
-      const chunks = await state.storage.get<Uint8Array>(meta.chunks);
-
-      const decoded = decoder.decode(
-        new Uint8Array(meta.chunks.reduce(
-          (acc, curr) => [...acc, ...chunks.get(curr)!],
-          [] as number[],
-        )),
-      );
-
-      return decoded;
-    },
-    writeFile: async (filepath: string, content: string) => {
-      const fullData = encoder.encode(content);
-      const chunks: Record<string, Uint8Array> = {};
-
-      for (
-        let chunk = 0;
-        chunk * MAX_CHUNK_SIZE < fullData.length;
-        chunk++
-      ) {
-        const key = chunkKey(filepath, chunk);
-
-        chunks[key] = fullData.slice(
-          chunk * MAX_CHUNK_SIZE,
-          (chunk + 1) * MAX_CHUNK_SIZE,
-        );
-      }
-
-      const metadata: Metadata = { chunks: Object.keys(chunks) };
-
-      await state.storage.put<Uint8Array>(chunks);
-      await state.storage.put<Metadata>(metaKey(filepath), metadata);
-    },
-    unlink: async (filepath: string) => {
-      const metaLocator = metaKey(filepath);
-      const meta = await state.storage.get<Metadata>(metaLocator);
-
-      if (!meta) {
-        return;
-      }
-
-      await state.storage.delete(metaLocator);
-      await state.storage.delete(meta.chunks);
-    },
-    readdir: async (filepath: string) => {
-      const match = await state.storage.list<Metadata>({
-        prefix: metaKey(filepath),
-      });
-
-      const files: string[] = [];
-      const base = metaKey("");
-
-      for (const key of match.keys()) {
-        files.push(key.replace(base, ""));
-      }
-
-      return files;
-    },
-    clear: async () => state.storage.deleteAll(),
-  };
-};
-
 const tieredFS = (...fastToSlow: MFFS[]): MFFS => {
   const [fastest] = fastToSlow;
 
@@ -208,17 +130,32 @@ export interface VolumeListResponse {
   timestamp: number;
   volumeId: string;
 }
+export type RealtimeState =
+  & Pick<
+    DurableObjectState,
+    "blockConcurrencyWhile"
+  >
+  & {
+    storage: Pick<
+      DurableObjectStorage,
+      "get" | "delete" | "put" | "deleteAll" | "list"
+    >;
+  };
 
 export class Realtime implements DurableObject {
   textState: Map<number, BinaryIndexedTree>;
-  state: DurableObjectState;
+  state: RealtimeState;
   sessions: Array<{ socket: WebSocket }> = [];
   fs: MFFS;
 
   router: Router;
   timestamp: number;
 
-  constructor(state: DurableObjectState, _env: Env, ephemeral = false) {
+  constructor(
+    state: RealtimeState,
+    _env: Env,
+    ephemeral = false,
+  ) {
     this.textState = new Map();
     this.state = state;
     this.timestamp = Date.now();
@@ -259,7 +196,7 @@ export class Realtime implements DurableObject {
             });
           }
 
-          const { 0: client, 1: socket } = new WebSocketPair();
+          const { socket, response } = upgradeWebSocket(req);
 
           this.sessions.push({ socket });
 
@@ -271,9 +208,7 @@ export class Realtime implements DurableObject {
             },
           );
 
-          socket.accept();
-
-          return new Response(null, { status: 101, webSocket: client });
+          return response;
         },
         PUT: async (req: Request) => {
           const fs = await req.json() as FileSystemNode;
@@ -309,7 +244,7 @@ export class Realtime implements DurableObject {
 
               try {
                 const newContent = JSON.stringify(
-                  operations.reduce(applyReducer, JSON.parse(content)),
+                  operations.reduce(fjp.applyReducer, JSON.parse(content)),
                 );
 
                 results.push({

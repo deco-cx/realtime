@@ -1,6 +1,6 @@
 import { getObjectFor } from "./realtime.ts";
 import { createRouter } from "./router.ts";
-import { wellKnownJWKSHandler } from "./security/identity.ts";
+//import { wellKnownJWKSHandler } from "./security/identity.ts";
 import { setFromString } from "./security/keys.ts";
 
 export interface Env {
@@ -11,7 +11,7 @@ export interface Env {
 }
 
 const router = createRouter<{ env: Env }>({
-  "/.well_known/jwks.json": wellKnownJWKSHandler,
+  //"/.well_known/jwks.json": wellKnownJWKSHandler,
   "/volumes/:id/*": async (req, ctx) =>
     getObjectFor(ctx.params.id, ctx).fetch(req),
   "/volumes/:id": async (req, ctx) =>
