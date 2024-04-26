@@ -140,10 +140,16 @@ export type RealtimeState =
     >;
   };
 
+export type RealtimeDurableObjectConstructor = new (
+  state: RealtimeState,
+  _env: Env,
+  ephemeral?: boolean,
+) => DurableObject;
+
 export const realtimeFor = (
   upgradeWebSocket: (req: Request) => { socket: WebSocket; response: Response },
   createDurableFS: (state: RealtimeState) => MFFS,
-) => {
+): RealtimeDurableObjectConstructor => {
   return class Realtime implements DurableObject {
     textState: Map<number, BinaryIndexedTree>;
     state: RealtimeState;
