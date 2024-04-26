@@ -1,7 +1,9 @@
-import { getObjectFor } from "./realtime.ts";
+import { getObjectFor, realtimeFor } from "./realtime.ts";
 import { createRouter } from "./router.ts";
 //import { wellKnownJWKSHandler } from "./security/identity.ts";
 import { setFromString } from "./security/keys.ts";
+import { upgradeWebSocket } from "./ws.ts";
+import { createDurableFS } from "./fs.ts";
 
 export interface Env {
   REALTIME: DurableObjectNamespace;
@@ -31,4 +33,10 @@ export default {
   },
 };
 
-export { EphemeralRealtime, Realtime } from "./realtime.ts";
+export const Realtime = realtimeFor(upgradeWebSocket, createDurableFS);
+
+export class EphemeralRealtime extends Realtime {
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env, true);
+  }
+}
