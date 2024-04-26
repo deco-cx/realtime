@@ -1,4 +1,7 @@
-import fjp from "fast-json-patch";
+import type {
+  DurableObject,
+  DurableObjectState,
+} from "@cloudflare/workers-types";
 import { BinaryIndexedTree } from "./crdt/bit.ts";
 import { apply } from "./crdt/text.ts";
 import { type Env } from "./index.ts";
@@ -8,15 +11,12 @@ import {
   FileSystemNode,
   isJSONFilePatch,
   isTextFileSet,
+  Operation,
   ServerEvent,
   VolumePatchRequest,
   VolumePatchResponse,
 } from "./realtime.types.ts";
 import { createRouter, Router, Routes } from "./router.ts";
-import type {
-  DurableObject,
-  DurableObjectState,
-} from "@cloudflare/workers-types";
 
 export const getObjectFor = (volume: string, ctx: { env: Env }) => {
   const object = volume.startsWith("ephemeral:")
@@ -149,6 +149,9 @@ export type RealtimeDurableObjectConstructor = new (
 export const realtimeFor = (
   upgradeWebSocket: (req: Request) => { socket: WebSocket; response: Response },
   createDurableFS: (state: RealtimeState) => MFFS,
+  fjp: {
+    applyReducer: <T>(object: T, operation: Operation, index: number) => T;
+  },
 ): RealtimeDurableObjectConstructor => {
   return class Realtime implements DurableObject {
     textState: Map<number, BinaryIndexedTree>;

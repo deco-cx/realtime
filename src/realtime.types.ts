@@ -1,5 +1,5 @@
-import { type Operation } from "fast-json-patch";
-
+import type { Operation } from "fast-json-patch";
+export type { Operation };
 export interface BaseFilePatch {
   path: string;
 }
