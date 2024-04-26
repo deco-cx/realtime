@@ -4,8 +4,8 @@ import type {
 } from "@cloudflare/workers-types";
 import { BinaryIndexedTree } from "./crdt/bit.ts";
 import { apply } from "./crdt/text.ts";
-import { type Env } from "./index.ts";
 import {
+  Env,
   File,
   FilePatchResult,
   FileSystemNode,

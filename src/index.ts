@@ -5,13 +5,7 @@ import fjp from "fast-json-patch";
 import { createDurableFS } from "./fs.ts";
 import { setFromString } from "./security/keys.ts";
 import { upgradeWebSocket } from "./ws.ts";
-
-export interface Env {
-  REALTIME: DurableObjectNamespace;
-  EPHEMERAL_REALTIME: DurableObjectNamespace;
-  WORKER_PUBLIC_KEY: string;
-  WORKER_PRIVATE_KEY: string;
-}
+import { Env } from "./realtime.types.ts";
 
 const router = createRouter<{ env: Env }>({
   //"/.well_known/jwks.json": wellKnownJWKSHandler,

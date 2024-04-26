@@ -1,5 +1,13 @@
 import type { Operation } from "fast-json-patch";
 export type { Operation };
+
+export interface Env {
+  REALTIME: DurableObjectNamespace;
+  EPHEMERAL_REALTIME: DurableObjectNamespace;
+  WORKER_PUBLIC_KEY: string;
+  WORKER_PRIVATE_KEY: string;
+}
+
 export interface BaseFilePatch {
   path: string;
 }
