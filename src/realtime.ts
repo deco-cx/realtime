@@ -70,6 +70,7 @@ export interface MFFS {
   readdir: (root: string) => Promise<string[]>;
   unlink: (filepath: string) => Promise<void>;
   clear: () => Promise<void>;
+  watch?: () => AsyncIterableIterator<Record<string, File>>;
 }
 
 const createMemFS = (): MFFS => {
@@ -381,6 +382,24 @@ export const realtimeFor = (
 
           await memFS.writeFile(path, content);
         }
+        durableFS.watch && (async () => {
+          for await (const files of durableFS.watch!()) {
+            for (const [path, file] of Object.entries(files)) {
+              const currentContent = await memFS.readFile(path);
+              const eventContent = file.content;
+              if (currentContent === eventContent) {
+                continue;
+              }
+              if (eventContent === null) {
+                await memFS.unlink(path);
+              } else {
+                await memFS.writeFile(path, eventContent);
+              }
+              this.timestamp = Date.now();
+              this.broadcast({ path, timestamp: this.timestamp });
+            }
+          }
+        })();
       });
     }
 
