@@ -386,7 +386,9 @@ export const realtimeFor = (
         durableFS.watch && (async () => {
           for await (const files of durableFS.watch!()) {
             for (const [path, file] of Object.entries(files)) {
-              const currentContent = await memFS.readFile(path);
+              const currentContent = await memFS.readFile(path).catch(
+                ignore("ENOENT"),
+              );
               const eventContent = file.content;
               if (currentContent === eventContent) {
                 continue;
