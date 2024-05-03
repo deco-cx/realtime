@@ -17,6 +17,7 @@ import {
   VolumePatchResponse,
 } from "./realtime.types.ts";
 import { createRouter, Router, Routes } from "./router.ts";
+export type { File };
 
 export const getObjectFor = (volume: string, ctx: { env: Env }) => {
   const object = volume.startsWith("ephemeral:")
