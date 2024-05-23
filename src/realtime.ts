@@ -168,7 +168,9 @@ export const realtimeFor = (
       state: RealtimeState,
       _env: Env,
       ephemeral = false,
+      formatted = false,
     ) {
+      const stringifier = (data: unknown) => formatted ? JSON.stringify(data, null, 2) : JSON.stringify(data);
       this.textState = new Map();
       this.state = state;
       this.timestamp = Date.now();
@@ -259,7 +261,7 @@ export const realtimeFor = (
                   await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "{}";
 
                 try {
-                  const newContent = JSON.stringify(
+                  const newContent = stringifier(
                     operations.reduce(fjp.applyReducer, JSON.parse(content)),
                   );
 
