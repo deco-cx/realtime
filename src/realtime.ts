@@ -146,6 +146,7 @@ export type RealtimeDurableObjectConstructor = new (
   state: RealtimeState,
   _env: Env,
   ephemeral?: boolean,
+  formatJson?: boolean,
 ) => DurableObject;
 
 export const realtimeFor = (
