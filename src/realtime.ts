@@ -278,11 +278,15 @@ export const realtimeFor = (
               } else if (isTextFileSet(patch)) {
                 const { path, content } = patch;
                 try {
-                  await this.fs.writeFile(path, content ?? "");
+                  if (content === null) {
+                    await this.fs.unlink(path)
+                  } else {
+                    await this.fs.writeFile(path, content ?? "");
+                  }
                   results.push({
                     accepted: true,
                     path,
-                    content: content ?? "",
+                    content: content === null ? undefined : content ?? "",
                     deleted: content === null,
                   });
                 } catch (error) {
