@@ -55,7 +55,7 @@ export interface VolumePatchRequest {
 export interface FilePatchResult {
   path: string;
   accepted: boolean;
-  content?: string;
+  content?: string | null;
   deleted?: boolean;
 }
 

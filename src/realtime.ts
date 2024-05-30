@@ -4,6 +4,7 @@ import type {
 } from "@cloudflare/workers-types";
 import { BinaryIndexedTree } from "./crdt/bit.ts";
 import { apply } from "./crdt/text.ts";
+import { FileLocker } from "./mutex.ts";
 import {
   Env,
   File,
@@ -175,6 +176,7 @@ export const realtimeFor = (
       this.textState = new Map();
       this.state = state;
       this.timestamp = Date.now();
+      const locker = FileLocker.new();
 
       const routes: Routes = {
         "/volumes/:id/files/*": {
@@ -253,6 +255,7 @@ export const realtimeFor = (
             const { patches, messageId } = await req
               .json() as VolumePatchRequest;
 
+            using _ = await locker.lockMany(patches);
             const results: FilePatchResult[] = [];
 
             for (const patch of patches) {
@@ -278,22 +281,17 @@ export const realtimeFor = (
               } else if (isTextFileSet(patch)) {
                 const { path, content } = patch;
                 try {
-                  if (content === null) {
-                    await this.fs.unlink(path)
-                  } else {
-                    await this.fs.writeFile(path, content ?? "");
-                  }
                   results.push({
                     accepted: true,
                     path,
-                    content: content === null ? undefined : content ?? "",
+                    content,
                     deleted: content === null,
                   });
                 } catch (error) {
                   results.push({
                     accepted: false,
                     path,
-                    content: content ?? "",
+                    content,
                   });
                 }
               } else {
