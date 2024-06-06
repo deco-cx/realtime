@@ -1,4 +1,4 @@
-import { FilePatch } from "./realtime.types.ts";
+import { FilePatch, isJSONFilePatch, isTextFilePatch, isTextFileSet } from "./realtime.types.ts";
 
 export class Mutex {
     public locked: boolean;
@@ -39,6 +39,58 @@ export class Mutex {
     }
 }
 
+/**
+ * Dedupes an array of file patches based on path.
+ * Patches coming last have priority.
+ */
+function dedupe(patches: FilePatch[]): FilePatch[] {
+    const dedupedPatchesMap = new Map<string, FilePatch>();
+
+    for (const patch of patches) {
+        if (!dedupedPatchesMap.has(patch.path)) {
+            dedupedPatchesMap.set(patch.path, patch);
+        } else {
+            const current = dedupedPatchesMap.get(patch.path);
+            if (!current) throw Error("Error deduping file patches");
+
+            if (isJSONFilePatch(patch) && isJSONFilePatch(current)) {
+                dedupedPatchesMap.set(current.path, {
+                    ...current,
+                    patches: [
+                        ...current.patches,
+                        ...patch.patches
+                    ]
+                });
+                continue;
+            }
+            
+            if (isTextFileSet(patch) && isTextFileSet(current)) {
+                dedupedPatchesMap.set(current.path, {
+                    ...current,
+                    content: patch.content,
+                });
+                continue;
+            }
+            
+            if (isTextFilePatch(current) && isTextFilePatch(patch)) {
+                dedupedPatchesMap.set(current.path, {
+                    ...current,
+                    timestamp: patch.timestamp,
+                    operations: [
+                        ...current.operations,
+                        ...patch.operations,
+                    ],
+                });
+                continue;
+            }
+
+            throw new Error("Error deduping file patches");
+        }
+    }
+
+    return Array.from(dedupedPatchesMap.values());
+}
+
 export const FileLocker = {
     new: () => {
         const mutexes = new Map<string, Mutex>();
@@ -52,7 +104,12 @@ export const FileLocker = {
         }
         return {
             lockMany: async (patches: FilePatch[]): Promise<Disposable> => {
-                const locks = await Promise.all(patches.map(patch => acquire(patch.path)));
+                /**
+                 * Make sure we never try to lockMany having two references to the
+                 * same path, else we're gonna be waiting forever
+                 */
+                const dedupedPatches = dedupe(patches);
+                const locks = await Promise.all(dedupedPatches.map(patch => acquire(patch.path)));
                 return {
                     [Symbol.dispose]: () => {
                         locks.forEach(lock => lock[Symbol.dispose]());

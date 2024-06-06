@@ -43,6 +43,10 @@ export const isTextFileSet = (patch: FilePatch): patch is TextFileSet => {
   return (patch as TextFileSet).content !== undefined;
 };
 
+export const isTextFilePatch = (patch: FilePatch): patch is TextFilePatch => {
+  return (patch as TextFilePatch).timestamp !== undefined;
+}
+
 export interface JSONFilePatch extends BaseFilePatch {
   patches: Operation[];
 }
