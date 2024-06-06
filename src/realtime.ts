@@ -8,6 +8,7 @@ import { FileLocker } from "./mutex.ts";
 import {
   Env,
   File,
+  FilePatch,
   FilePatchResult,
   FileSystemNode,
   isJSONFilePatch,
@@ -255,13 +256,18 @@ export const realtimeFor = (
             const { patches, messageId } = await req
               .json() as VolumePatchRequest;
 
-            using _ = await locker.lockMany(patches);
+            const filePathsToLock = patches.map(p => p.path);
+            using _ = await locker.lockMany(filePathsToLock);
+
             const results: FilePatchResult[] = [];
+            // <Path, File Contents> Map
+            const readUncommitted: Record<string, string> = {};
 
             for (const patch of patches) {
               if (isJSONFilePatch(patch)) {
                 const { path, patches: operations } = patch;
                 const content =
+                  readUncommitted[path] ??
                   await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "{}";
 
                 try {
@@ -275,6 +281,7 @@ export const realtimeFor = (
                     content: newContent,
                     deleted: newContent === "null",
                   });
+                  readUncommitted[path] = newContent;
                 } catch (error) {
                   results.push({ accepted: false, path, content });
                 }
@@ -297,6 +304,7 @@ export const realtimeFor = (
               } else {
                 const { path, operations, timestamp } = patch;
                 const content =
+                  readUncommitted[path] ??
                   await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "";
                 if (!this.textState.has(timestamp)) { // durable was restarted
                   results.push({ accepted: false, path, content });
@@ -312,6 +320,7 @@ export const realtimeFor = (
                     path,
                     content: result,
                   });
+                  readUncommitted[path] = result;
                 } else {
                   results.push({
                     accepted: false,
