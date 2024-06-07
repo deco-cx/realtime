@@ -260,14 +260,13 @@ export const realtimeFor = (
             using _ = await locker.lockMany(filePathsToLock);
 
             const results: FilePatchResult[] = [];
-            // <Path, File Contents> Map
-            const readUncommitted: Record<string, string> = {};
+            const uncommitted: Record<string, string> = {};
 
             for (const patch of patches) {
               if (isJSONFilePatch(patch)) {
                 const { path, patches: operations } = patch;
                 const content =
-                  readUncommitted[path] ??
+                  uncommitted[path] ??
                   await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "{}";
 
                 try {
@@ -281,7 +280,7 @@ export const realtimeFor = (
                     content: newContent,
                     deleted: newContent === "null",
                   });
-                  readUncommitted[path] = newContent;
+                  uncommitted[path] = newContent;
                 } catch (error) {
                   results.push({ accepted: false, path, content });
                 }
@@ -304,7 +303,7 @@ export const realtimeFor = (
               } else {
                 const { path, operations, timestamp } = patch;
                 const content =
-                  readUncommitted[path] ??
+                  uncommitted[path] ??
                   await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "";
                 if (!this.textState.has(timestamp)) { // durable was restarted
                   results.push({ accepted: false, path, content });
@@ -320,7 +319,7 @@ export const realtimeFor = (
                     path,
                     content: result,
                   });
-                  readUncommitted[path] = result;
+                  uncommitted[path] = result;
                 } else {
                   results.push({
                     accepted: false,
