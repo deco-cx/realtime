@@ -8,15 +8,14 @@ import { FileLocker } from "./mutex.ts";
 import {
   Env,
   File,
-  FilePatch,
   FilePatchResult,
   FileSystemNode,
   isJSONFilePatch,
-  isTextFileSet,
+  isTextFilePatch,
   Operation,
   ServerEvent,
   VolumePatchRequest,
-  VolumePatchResponse,
+  VolumePatchResponse
 } from "./realtime.types.ts";
 import { createRouter, Router, Routes } from "./router.ts";
 export type { File };
@@ -284,7 +283,7 @@ export const realtimeFor = (
                 } catch (error) {
                   results.push({ accepted: false, path, content });
                 }
-              } else if (isTextFileSet(patch)) {
+              } else if (!isTextFilePatch(patch)) {
                 const { path, content } = patch;
                 try {
                   results.push({
