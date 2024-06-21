@@ -15,7 +15,7 @@ import {
   Operation,
   ServerEvent,
   VolumePatchRequest,
-  VolumePatchResponse
+  VolumePatchResponse,
 } from "./realtime.types.ts";
 import { createRouter, Router, Routes } from "./router.ts";
 export type { File };
@@ -172,7 +172,8 @@ export const realtimeFor = (
       ephemeral = false,
       formatted = false,
     ) {
-      const stringifier = (data: unknown) => formatted ? JSON.stringify(data, null, 2) : JSON.stringify(data);
+      const stringifier = (data: unknown) =>
+        formatted ? JSON.stringify(data, null, 2) : JSON.stringify(data);
       this.textState = new Map();
       this.state = state;
       this.timestamp = Date.now();
@@ -204,13 +205,19 @@ export const realtimeFor = (
             } satisfies VolumeListResponse,
           );
         },
-      }
+      };
       const routes: Routes = {
         "/volumes/:id/files/*": filesRoute,
         "/volumes/:id/files": {
-          GET: async (req: Request, params) => {
+          GET: async (req: Request, { params, ...rest }) => {
             if (req.headers.get("Upgrade") !== "websocket") { // support trailing slash routes
-              return filesRoute.GET(req, params);
+              return filesRoute.GET(req, {
+                ...rest,
+                params: {
+                  "0": "",
+                  ...params,
+                },
+              });
             }
 
             const { socket, response } = upgradeWebSocket(req);
@@ -254,7 +261,7 @@ export const realtimeFor = (
             const { patches, messageId } = await req
               .json() as VolumePatchRequest;
 
-            const filePathsToLock = patches.map(p => p.path);
+            const filePathsToLock = patches.map((p) => p.path);
             using _ = await locker.lockMany(filePathsToLock);
 
             const results: FilePatchResult[] = [];
@@ -263,8 +270,7 @@ export const realtimeFor = (
             for (const patch of patches) {
               if (isJSONFilePatch(patch)) {
                 const { path, patches: operations } = patch;
-                const content =
-                  uncommitted[path] ??
+                const content = uncommitted[path] ??
                   await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "{}";
 
                 try {
@@ -300,8 +306,7 @@ export const realtimeFor = (
                 }
               } else {
                 const { path, operations, timestamp } = patch;
-                const content =
-                  uncommitted[path] ??
+                const content = uncommitted[path] ??
                   await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "";
                 if (!this.textState.has(timestamp)) { // durable was restarted
                   results.push({ accepted: false, path, content });
