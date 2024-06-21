@@ -178,40 +178,39 @@ export const realtimeFor = (
       this.timestamp = Date.now();
       const locker = FileLocker.new();
 
-      const routes: Routes = {
-        "/volumes/:id/files/*": {
-          GET: async (req, { params }) => {
-            const volumeId = params.id;
-            const path = `/${params["0"]}`;
-            const contentQs = new URL(req.url).searchParams.get("content");
-            const contentFilter: false | string = contentQs === "true"
-              ? "/"
-              : contentQs !== "false" && (contentQs ?? false);
+      const filesRoute: Routes[string] = {
+        GET: async (req, { params }) => {
+          const volumeId = params.id;
+          const path = `/${params["0"]}`;
+          const contentQs = new URL(req.url).searchParams.get("content");
+          const contentFilter: false | string = contentQs === "true"
+            ? "/"
+            : contentQs !== "false" && (contentQs ?? false);
 
-            const fs: Record<string, { content: string | null }> = {};
-            for (const key of await this.fs.readdir(path)) {
-              const withContent = contentFilter !== false &&
-                key.startsWith(contentFilter);
-              fs[key] = {
-                content: withContent ? await this.fs.readFile(key) : null,
-              };
-            }
+          const fs: Record<string, { content: string | null }> = {};
+          for (const key of await this.fs.readdir(path)) {
+            const withContent = contentFilter !== false &&
+              key.startsWith(contentFilter);
+            fs[key] = {
+              content: withContent ? await this.fs.readFile(key) : null,
+            };
+          }
 
-            return Response.json(
-              {
-                timestamp: this.timestamp,
-                volumeId,
-                fs,
-              } satisfies VolumeListResponse,
-            );
-          },
+          return Response.json(
+            {
+              timestamp: this.timestamp,
+              volumeId,
+              fs,
+            } satisfies VolumeListResponse,
+          );
         },
+      }
+      const routes: Routes = {
+        "/volumes/:id/files/*": filesRoute,
         "/volumes/:id/files": {
-          GET: async (req: Request) => {
-            if (req.headers.get("Upgrade") !== "websocket") {
-              return new Response("Missing header Upgrade: websocket ", {
-                status: 400,
-              });
+          GET: async (req: Request, params) => {
+            if (req.headers.get("Upgrade") !== "websocket") { // support trailing slash routes
+              return filesRoute.GET(req, params);
             }
 
             const { socket, response } = upgradeWebSocket(req);
@@ -372,7 +371,7 @@ export const realtimeFor = (
           },
         },
         "/volumes/:id": {},
-      };
+      } satisfies Routes;
       this.router = createRouter(routes);
       const memFS = createMemFS();
 
