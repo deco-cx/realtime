@@ -1,18 +1,24 @@
-import { applyReducer } from "fast-json-patch";
+import type {
+  DurableObject,
+  DurableObjectState,
+} from "@cloudflare/workers-types";
 import { BinaryIndexedTree } from "./crdt/bit.ts";
 import { apply } from "./crdt/text.ts";
-import { type Env } from "./index.ts";
+import { FileLocker } from "./mutex.ts";
 import {
+  Env,
   File,
   FilePatchResult,
   FileSystemNode,
   isJSONFilePatch,
-  isTextFileSet,
+  isTextFilePatch,
+  Operation,
   ServerEvent,
   VolumePatchRequest,
   VolumePatchResponse,
 } from "./realtime.types.ts";
 import { createRouter, Router, Routes } from "./router.ts";
+export type { File };
 
 export const getObjectFor = (volume: string, ctx: { env: Env }) => {
   const object = volume.startsWith("ephemeral:")
@@ -20,11 +26,8 @@ export const getObjectFor = (volume: string, ctx: { env: Env }) => {
     : ctx.env.REALTIME;
   return object.get(
     object.idFromName(volume),
-  ) as unknown as Realtime;
+  );
 };
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 export class RealtimeError extends Error {
   public status: number;
@@ -63,12 +66,13 @@ const ignore = (code: ErrorCode) => (e: unknown) => {
   throw e;
 };
 
-interface MFFS {
+export interface MFFS {
   writeFile: (filepath: string, content: string) => Promise<void>;
   readFile: (filepath: string) => Promise<string | null>;
   readdir: (root: string) => Promise<string[]>;
   unlink: (filepath: string) => Promise<void>;
   clear: () => Promise<void>;
+  watch?: () => AsyncIterableIterator<Record<string, File>>;
 }
 
 const createMemFS = (): MFFS => {
@@ -95,87 +99,6 @@ const createMemFS = (): MFFS => {
     clear: async () => {
       root.clear();
     },
-  };
-};
-
-const createDurableFS = (state: DurableObjectState): MFFS => {
-  interface Metadata {
-    chunks: string[];
-  }
-
-  const MAX_CHUNK_SIZE = 131072;
-
-  const metaKey = (filepath: string) => `meta::${filepath}`;
-  const chunkKey = (filepath: string, chunk: number) =>
-    `chunk::${filepath}::${chunk}`;
-
-  return {
-    readFile: async (filepath: string): Promise<string> => {
-      const meta = await state.storage.get<Metadata>(metaKey(filepath));
-
-      if (!meta) {
-        throw new FSError("ENOENT");
-      }
-
-      const chunks = await state.storage.get<Uint8Array>(meta.chunks);
-
-      const decoded = decoder.decode(
-        new Uint8Array(meta.chunks.reduce(
-          (acc, curr) => [...acc, ...chunks.get(curr)!],
-          [] as number[],
-        )),
-      );
-
-      return decoded;
-    },
-    writeFile: async (filepath: string, content: string) => {
-      const fullData = encoder.encode(content);
-      const chunks: Record<string, Uint8Array> = {};
-
-      for (
-        let chunk = 0;
-        chunk * MAX_CHUNK_SIZE < fullData.length;
-        chunk++
-      ) {
-        const key = chunkKey(filepath, chunk);
-
-        chunks[key] = fullData.slice(
-          chunk * MAX_CHUNK_SIZE,
-          (chunk + 1) * MAX_CHUNK_SIZE,
-        );
-      }
-
-      const metadata: Metadata = { chunks: Object.keys(chunks) };
-
-      await state.storage.put<Uint8Array>(chunks);
-      await state.storage.put<Metadata>(metaKey(filepath), metadata);
-    },
-    unlink: async (filepath: string) => {
-      const metaLocator = metaKey(filepath);
-      const meta = await state.storage.get<Metadata>(metaLocator);
-
-      if (!meta) {
-        return;
-      }
-
-      await state.storage.delete(metaLocator);
-      await state.storage.delete(meta.chunks);
-    },
-    readdir: async (filepath: string) => {
-      const match = await state.storage.list<Metadata>({
-        prefix: metaKey(filepath),
-      });
-
-      const files: string[] = [];
-      const base = metaKey("");
-
-      for (const key of match.keys()) {
-        files.push(key.replace(base, ""));
-      }
-
-      return files;
-    },
-    clear: async () => state.storage.deleteAll(),
   };
 };
 
@@ -208,23 +131,55 @@ export interface VolumeListResponse {
   timestamp: number;
   volumeId: string;
 }
+export type RealtimeState =
+  & Pick<
+    DurableObjectState,
+    "blockConcurrencyWhile"
+  >
+  & {
+    storage: Pick<
+      DurableObjectStorage,
+      "get" | "delete" | "put" | "deleteAll" | "list"
+    >;
+  };
 
-export class Realtime implements DurableObject {
-  textState: Map<number, BinaryIndexedTree>;
-  state: DurableObjectState;
-  sessions: Array<{ socket: WebSocket }> = [];
-  fs: MFFS;
+export type RealtimeDurableObjectConstructor = new (
+  state: RealtimeState,
+  _env: Env,
+  ephemeral?: boolean,
+  formatJson?: boolean,
+) => DurableObject;
 
-  router: Router;
-  timestamp: number;
+export const realtimeFor = (
+  upgradeWebSocket: (req: Request) => { socket: WebSocket; response: Response },
+  createDurableFS: (state: RealtimeState) => MFFS,
+  fjp: {
+    applyReducer: <T>(object: T, operation: Operation, index: number) => T;
+  },
+): RealtimeDurableObjectConstructor => {
+  return class Realtime implements DurableObject {
+    textState: Map<number, BinaryIndexedTree>;
+    state: RealtimeState;
+    sessions: Array<{ socket: WebSocket }> = [];
+    fs: MFFS;
 
-  constructor(state: DurableObjectState, _env: Env, ephemeral = false) {
-    this.textState = new Map();
-    this.state = state;
-    this.timestamp = Date.now();
+    router: Router;
+    timestamp: number;
 
-    const routes: Routes = {
-      "/volumes/:id/files/*": {
+    constructor(
+      state: RealtimeState,
+      _env: Env,
+      ephemeral = false,
+      formatted = false,
+    ) {
+      const stringifier = (data: unknown) =>
+        formatted ? JSON.stringify(data, null, 2) : JSON.stringify(data);
+      this.textState = new Map();
+      this.state = state;
+      this.timestamp = Date.now();
+      const locker = FileLocker.new();
+
+      const filesRoute: Routes[string] = {
         GET: async (req, { params }) => {
           const volumeId = params.id;
           const path = `/${params["0"]}`;
@@ -250,200 +205,231 @@ export class Realtime implements DurableObject {
             } satisfies VolumeListResponse,
           );
         },
-      },
-      "/volumes/:id/files": {
-        GET: async (req: Request) => {
-          if (req.headers.get("Upgrade") !== "websocket") {
-            return new Response("Missing header Upgrade: websocket ", {
-              status: 400,
-            });
-          }
-
-          const { 0: client, 1: socket } = new WebSocketPair();
-
-          this.sessions.push({ socket });
-
-          socket.addEventListener(
-            "close",
-            (cls) => {
-              this.sessions = this.sessions.filter((s) => s.socket !== socket);
-              socket.close(cls.code, "Durable Object is closing WebSocket");
-            },
-          );
-
-          socket.accept();
-
-          return new Response(null, { status: 101, webSocket: client });
-        },
-        PUT: async (req: Request) => {
-          const fs = await req.json() as FileSystemNode;
-
-          const ts = Date.now();
-          this.timestamp = ts;
-          // clears filesystem before writting new files
-          await this.fs.clear();
-
-          await Promise.all(
-            Object.entries(fs).map(([path, value]) =>
-              this.fs.writeFile(path, value.content).then(
-                () => {
-                  // TODO (mcandeia) this is not notifying deleted files.
-                  this.broadcast({ path, timestamp: ts });
+      };
+      const routes: Routes = {
+        "/volumes/:id/files/*": filesRoute,
+        "/volumes/:id/files": {
+          GET: async (req: Request, { params, ...rest }) => {
+            if (req.headers.get("Upgrade") !== "websocket") { // support trailing slash routes
+              return filesRoute.GET(req, {
+                ...rest,
+                params: {
+                  "0": "",
+                  ...params,
                 },
-              )
-            ),
-          );
-
-          return new Response(null, { status: 204 });
-        },
-        PATCH: async (req: Request) => {
-          const { patches, messageId } = await req.json() as VolumePatchRequest;
-
-          const results: FilePatchResult[] = [];
-
-          for (const patch of patches) {
-            if (isJSONFilePatch(patch)) {
-              const { path, patches: operations } = patch;
-              const content =
-                await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "{}";
-
-              try {
-                const newContent = JSON.stringify(
-                  operations.reduce(applyReducer, JSON.parse(content)),
-                );
-
-                results.push({
-                  accepted: true,
-                  path,
-                  content: newContent,
-                  deleted: newContent === "null",
-                });
-              } catch (error) {
-                results.push({ accepted: false, path, content });
-              }
-            } else if (isTextFileSet(patch)) {
-              const { path, content } = patch;
-              try {
-                await this.fs.writeFile(path, content ?? "");
-                results.push({
-                  accepted: true,
-                  path,
-                  content: content ?? "",
-                  deleted: content === null,
-                });
-              } catch (error) {
-                results.push({ accepted: false, path, content: content ?? "" });
-              }
-            } else {
-              const { path, operations, timestamp } = patch;
-              const content =
-                await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "";
-              if (!this.textState.has(timestamp)) { // durable was restarted
-                results.push({ accepted: false, path, content });
-                continue;
-              }
-              const bit = this.textState.get(timestamp) ??
-                new BinaryIndexedTree();
-              const [result, success] = apply(content, operations, bit);
-              if (success) {
-                this.textState.set(timestamp, bit);
-                results.push({
-                  accepted: true,
-                  path,
-                  content: result,
-                });
-              } else {
-                results.push({
-                  accepted: false,
-                  path,
-                  content,
-                });
-              }
+              });
             }
-          }
 
-          this.timestamp = Date.now();
-          this.textState.set(this.timestamp, new BinaryIndexedTree());
-          const shouldWrite = results.every((r) => r.accepted);
+            const { socket, response } = upgradeWebSocket(req);
 
-          if (shouldWrite) {
-            await Promise.all(
-              results.map(async (r) => {
-                try {
-                  if (r.deleted) {
-                    await this.fs.unlink(r.path);
-                  } else {
-                    await this.fs.writeFile(r.path, r.content!);
-                  }
-                } catch (error) {
-                  console.error(error);
-                  r.accepted = false;
-                }
-              }),
+            this.sessions.push({ socket });
+
+            socket.addEventListener(
+              "close",
+              (cls) => {
+                this.sessions = this.sessions.filter((s) =>
+                  s.socket !== socket
+                );
+                socket.close(cls.code, "Durable Object is closing WebSocket");
+              },
             );
 
-            const shouldBroadcast = results.every((r) => r.accepted);
-            if (shouldBroadcast) {
-              for (const result of results) {
-                const { path, deleted } = result;
-                this.broadcast({
-                  messageId,
-                  path,
-                  timestamp: this.timestamp,
-                  deleted,
-                });
+            return response;
+          },
+          PUT: async (req: Request) => {
+            const fs = await req.json() as FileSystemNode;
+
+            const ts = Date.now();
+            this.timestamp = ts;
+            // clears filesystem before writting new files
+            await this.fs.clear();
+
+            await Promise.all(
+              Object.entries(fs).map(([path, value]) =>
+                this.fs.writeFile(path, value.content).then(
+                  () => {
+                    // TODO (mcandeia) this is not notifying deleted files.
+                    this.broadcast({ path, timestamp: ts });
+                  },
+                )
+              ),
+            );
+
+            return new Response(null, { status: 204 });
+          },
+          PATCH: async (req: Request) => {
+            const { patches, messageId } = await req
+              .json() as VolumePatchRequest;
+
+            const filePathsToLock = patches.map((p) => p.path);
+            using _ = await locker.lockMany(filePathsToLock);
+
+            const results: FilePatchResult[] = [];
+            const uncommitted: Record<string, string> = {};
+
+            for (const patch of patches) {
+              if (isJSONFilePatch(patch)) {
+                const { path, patches: operations } = patch;
+                const content = uncommitted[path] ??
+                  await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "{}";
+
+                try {
+                  const newContent = stringifier(
+                    operations.reduce(fjp.applyReducer, JSON.parse(content)),
+                  );
+
+                  results.push({
+                    accepted: true,
+                    path,
+                    content: newContent,
+                    deleted: newContent === "null",
+                  });
+                  uncommitted[path] = newContent;
+                } catch (error) {
+                  results.push({ accepted: false, path, content });
+                }
+              } else if (!isTextFilePatch(patch)) {
+                const { path, content } = patch;
+                try {
+                  results.push({
+                    accepted: true,
+                    path,
+                    content,
+                    deleted: content === null,
+                  });
+                } catch (error) {
+                  results.push({
+                    accepted: false,
+                    path,
+                    content,
+                  });
+                }
+              } else {
+                const { path, operations, timestamp } = patch;
+                const content = uncommitted[path] ??
+                  await this.fs.readFile(path).catch(ignore("ENOENT")) ?? "";
+                if (!this.textState.has(timestamp)) { // durable was restarted
+                  results.push({ accepted: false, path, content });
+                  continue;
+                }
+                const bit = this.textState.get(timestamp) ??
+                  new BinaryIndexedTree();
+                const [result, success] = apply(content, operations, bit);
+                if (success) {
+                  this.textState.set(timestamp, bit);
+                  results.push({
+                    accepted: true,
+                    path,
+                    content: result,
+                  });
+                  uncommitted[path] = result;
+                } else {
+                  results.push({
+                    accepted: false,
+                    path,
+                    content,
+                  });
+                }
               }
             }
+
+            this.timestamp = Date.now();
+            this.textState.set(this.timestamp, new BinaryIndexedTree());
+            const shouldWrite = results.every((r) => r.accepted);
+
+            if (shouldWrite) {
+              await Promise.all(
+                results.map(async (r) => {
+                  try {
+                    if (r.deleted) {
+                      await this.fs.unlink(r.path);
+                    } else {
+                      await this.fs.writeFile(r.path, r.content!);
+                    }
+                  } catch (error) {
+                    console.error(error);
+                    r.accepted = false;
+                  }
+                }),
+              );
+
+              const shouldBroadcast = results.every((r) => r.accepted);
+              if (shouldBroadcast) {
+                for (const result of results) {
+                  const { path, deleted } = result;
+                  this.broadcast({
+                    messageId,
+                    path,
+                    timestamp: this.timestamp,
+                    deleted,
+                  });
+                }
+              }
+            }
+
+            return Response.json(
+              {
+                timestamp: this.timestamp,
+                results,
+              } satisfies VolumePatchResponse,
+            );
+          },
+        },
+        "/volumes/:id": {},
+      } satisfies Routes;
+      this.router = createRouter(routes);
+      const memFS = createMemFS();
+
+      if (ephemeral) {
+        this.fs = memFS;
+        return;
+      }
+      const durableFS = createDurableFS(state);
+      this.fs = tieredFS(memFS, durableFS);
+      // init memFS with durable content
+      this.state.blockConcurrencyWhile(async () => {
+        const paths = await durableFS.readdir("/");
+
+        for (const path of paths) {
+          const content = await durableFS.readFile(path);
+
+          if (!content) {
+            continue;
           }
 
-          return Response.json(
-            {
-              timestamp: this.timestamp,
-              results,
-            } satisfies VolumePatchResponse,
-          );
-        },
-      },
-      "/volumes/:id": {},
-    };
-    this.router = createRouter(routes);
-    const memFS = createMemFS();
-
-    if (ephemeral) {
-      this.fs = memFS;
-      return;
-    }
-    const durableFS = createDurableFS(state);
-    this.fs = tieredFS(memFS, durableFS);
-    // init memFS with durable content
-    this.state.blockConcurrencyWhile(async () => {
-      const paths = await durableFS.readdir("/");
-
-      for (const path of paths) {
-        const content = await durableFS.readFile(path);
-
-        if (!content) {
-          continue;
+          await memFS.writeFile(path, content);
         }
-
-        await memFS.writeFile(path, content);
-      }
-    });
-  }
-
-  broadcast(msg: ServerEvent) {
-    for (const session of this.sessions) {
-      session.socket.send(JSON.stringify(msg));
+        durableFS.watch && (async () => {
+          for await (const files of durableFS.watch!()) {
+            for (const [path, file] of Object.entries(files)) {
+              const currentContent = await memFS.readFile(path).catch(
+                ignore("ENOENT"),
+              );
+              const eventContent = file.content;
+              if (currentContent === eventContent) {
+                continue;
+              }
+              if (eventContent === null) {
+                await memFS.unlink(path);
+              } else {
+                await memFS.writeFile(path, eventContent);
+              }
+              this.timestamp = Date.now();
+              this.broadcast({ path, timestamp: this.timestamp });
+            }
+          }
+        })();
+      });
     }
-  }
 
-  async fetch(request: Request) {
-    return this.router(request);
-  }
-}
+    broadcast(msg: ServerEvent) {
+      for (const session of this.sessions) {
+        session.socket.send(JSON.stringify(msg));
+      }
+    }
 
-export class EphemeralRealtime extends Realtime {
-  constructor(state: DurableObjectState, env: Env) {
-    super(state, env, true);
-  }
-}
+    async fetch(request: Request) {
+      return this.router(request);
+    }
+  };
+};
