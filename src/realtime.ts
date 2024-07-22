@@ -161,7 +161,7 @@ export const realtimeFor = (
     textState: Map<number, BinaryIndexedTree>;
     state: RealtimeState;
     sessions: Array<{ socket: WebSocket }> = [];
-    fs: MFFS;
+    public fs: MFFS;
 
     router: Router;
     timestamp: number;
