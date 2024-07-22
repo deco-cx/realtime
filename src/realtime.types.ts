@@ -1,4 +1,12 @@
-import { type Operation } from "fast-json-patch";
+import type { Operation } from "fast-json-patch";
+export type { Operation };
+
+export interface Env {
+  REALTIME: DurableObjectNamespace;
+  EPHEMERAL_REALTIME: DurableObjectNamespace;
+  WORKER_PUBLIC_KEY: string;
+  WORKER_PRIVATE_KEY: string;
+}
 
 export interface BaseFilePatch {
   path: string;
@@ -35,6 +43,10 @@ export const isTextFileSet = (patch: FilePatch): patch is TextFileSet => {
   return (patch as TextFileSet).content !== undefined;
 };
 
+export const isTextFilePatch = (patch: FilePatch): patch is TextFilePatch => {
+  return (patch as TextFilePatch).timestamp !== undefined && (patch as TextFilePatch).operations?.length >= 0;
+}
+
 export interface JSONFilePatch extends BaseFilePatch {
   patches: Operation[];
 }
@@ -47,7 +59,7 @@ export interface VolumePatchRequest {
 export interface FilePatchResult {
   path: string;
   accepted: boolean;
-  content?: string;
+  content?: string | null;
   deleted?: boolean;
 }
 

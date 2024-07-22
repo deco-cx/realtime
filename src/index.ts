@@ -1,17 +1,14 @@
-import { getObjectFor } from "./realtime.ts";
+import { getObjectFor, realtimeFor } from "./realtime.ts";
 import { createRouter } from "./router.ts";
-import { wellKnownJWKSHandler } from "./security/identity.ts";
+//import { wellKnownJWKSHandler } from "./security/identity.ts";
+import fjp from "fast-json-patch";
+import { createDurableFS } from "./fs.ts";
 import { setFromString } from "./security/keys.ts";
-
-export interface Env {
-  REALTIME: DurableObjectNamespace;
-  EPHEMERAL_REALTIME: DurableObjectNamespace;
-  WORKER_PUBLIC_KEY: string;
-  WORKER_PRIVATE_KEY: string;
-}
+import { upgradeWebSocket } from "./ws.ts";
+import { Env } from "./realtime.types.ts";
 
 const router = createRouter<{ env: Env }>({
-  "/.well_known/jwks.json": wellKnownJWKSHandler,
+  //"/.well_known/jwks.json": wellKnownJWKSHandler,
   "/volumes/:id/*": async (req, ctx) =>
     getObjectFor(ctx.params.id, ctx).fetch(req),
   "/volumes/:id": async (req, ctx) =>
@@ -31,4 +28,10 @@ export default {
   },
 };
 
-export { EphemeralRealtime, Realtime } from "./realtime.ts";
+export const Realtime = realtimeFor(upgradeWebSocket, createDurableFS, fjp);
+
+export class EphemeralRealtime extends Realtime {
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env, true);
+  }
+}
