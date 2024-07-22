@@ -148,7 +148,7 @@ export type RealtimeDurableObjectConstructor = new (
   _env: Env,
   ephemeral?: boolean,
   formatJson?: boolean,
-) => DurableObject;
+) => DurableObject & {fs: MFFS };
 
 export const realtimeFor = (
   upgradeWebSocket: (req: Request) => { socket: WebSocket; response: Response },
